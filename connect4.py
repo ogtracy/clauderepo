@@ -8,6 +8,16 @@ import random
 import sys
 
 
+# ANSI color codes
+class Colors:
+    RED = '\033[91m'
+    YELLOW = '\033[93m'
+    BRIGHT_RED = '\033[1;91m'
+    BRIGHT_YELLOW = '\033[1;93m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
 class Connect4:
     def __init__(self, rows=6, cols=7):
         """Initialize the game board and game state."""
@@ -15,17 +25,35 @@ class Connect4:
         self.cols = cols
         self.board = [[' ' for _ in range(cols)] for _ in range(rows)]
         self.current_winner = None
+        self.last_move = None  # Track last move as (row, col)
 
     def print_board(self):
-        """Display the current game board."""
+        """Display the current game board with colors."""
         print("\n")
         # Print column numbers
         print("  " + "   ".join([str(i) for i in range(self.cols)]))
         print("+" + "---+" * self.cols)
 
         # Print board rows (top to bottom)
-        for row in self.board:
-            print("| " + " | ".join(row) + " |")
+        for r, row in enumerate(self.board):
+            row_display = []
+            for c, cell in enumerate(row):
+                # Check if this is the last move
+                is_last_move = self.last_move and self.last_move == (r, c)
+
+                if cell == 'R':
+                    # Red piece
+                    color = Colors.BRIGHT_RED if is_last_move else Colors.RED
+                    row_display.append(f"{color}●{Colors.RESET}")
+                elif cell == 'Y':
+                    # Yellow piece
+                    color = Colors.BRIGHT_YELLOW if is_last_move else Colors.YELLOW
+                    row_display.append(f"{color}●{Colors.RESET}")
+                else:
+                    # Empty space
+                    row_display.append(" ")
+
+            print("| " + " | ".join(row_display) + " |")
             print("+" + "---+" * self.cols)
         print()
 
@@ -55,6 +83,7 @@ class Connect4:
         row = self.get_next_open_row(col)
         if row is not None:
             self.board[row][col] = piece
+            self.last_move = (row, col)  # Track the last move
             if self.check_winner(row, col, piece):
                 self.current_winner = piece
             return True
@@ -124,9 +153,10 @@ class HumanPlayer:
         """Get a valid column choice from the human player."""
         valid_col = False
         col = None
+        color = Colors.RED if self.piece == 'R' else Colors.YELLOW
         while not valid_col:
             try:
-                col = input(f"{self.piece}'s turn. Enter column (0-{game.cols-1}): ")
+                col = input(f"{color}{self.piece}'s turn{Colors.RESET}. Enter column (0-{game.cols-1}): ")
                 col = int(col)
                 if col not in game.available_columns():
                     print(f"Column {col} is full or invalid. Try again.")
@@ -239,13 +269,16 @@ def play(game, red_player, yellow_player, print_game=True):
         # Make the move
         if game.make_move(col, piece):
             if print_game:
-                print(f"\n{piece} drops a piece in column {col}")
+                color_code = Colors.RED if piece == 'R' else Colors.YELLOW
+                color_name = "Red" if piece == 'R' else "Yellow"
+                print(f"\n{color_code}{color_name}{Colors.RESET} drops a piece in column {col}")
                 game.print_board()
 
             if game.current_winner:
                 if print_game:
-                    color = "Red" if piece == 'R' else "Yellow"
-                    print(f"{color} ({piece}) wins!")
+                    color_code = Colors.RED if piece == 'R' else Colors.YELLOW
+                    color_name = "Red" if piece == 'R' else "Yellow"
+                    print(f"{color_code}{Colors.BOLD}{color_name} wins!{Colors.RESET}")
                 return piece
 
             # Alternate pieces
@@ -265,7 +298,8 @@ def main():
     print("Welcome to Connect 4!")
     print("=" * 50)
     print("\nConnect 4 pieces in a row to win!")
-    print("You are Red (R), Computer is Yellow (Y)")
+    print(f"You are {Colors.RED}Red (●){Colors.RESET}, Computer is {Colors.YELLOW}Yellow (●){Colors.RESET}")
+    print(f"{Colors.BOLD}The most recent move will be highlighted brighter{Colors.RESET}")
     print()
 
     # Set up players

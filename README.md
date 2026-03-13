@@ -149,3 +149,33 @@ python3 openlibrary_works_to_csv.py
 - Progress indicators for download and conversion
 
 **Output**: Directory `works_csv/` containing files like `works_0001.csv`, `works_0002.csv`, etc. with fields like title, subtitle, authors, subjects, description, first_publish_date, etc.
+
+#### Editions Dump to CSV Converter
+
+Downloads and converts the Open Library editions dump (specific published versions of books).
+
+**See**: [OPENLIBRARY_EDITIONS_README.md](OPENLIBRARY_EDITIONS_README.md) for detailed documentation.
+
+**Quick Start**:
+```bash
+# Test with sample data
+python3 openlibrary_editions_to_csv.py --test
+
+# Run the test suite
+python3 test_editions_converter.py
+
+# Full download (processes tens of millions of records - ~25 GB!)
+python3 openlibrary_editions_to_csv.py
+```
+
+**Features**:
+- Downloads Open Library's editions dump (~25 GB compressed)
+- Parses tab-separated JSONL format
+- Extracts edition information (title, publisher, ISBN, pages, etc.)
+- **Splits into multiple CSV files** (10,000 records each)
+- **Proper CSV escaping** with semicolon-separated publishers
+- Outputs clean CSV with 20 columns
+- Test mode for working with sample data
+- Progress indicators for download and conversion
+
+**Output**: Directory `editions_csv/` containing files like `editions_0001.csv`, `editions_0002.csv`, etc. with fields like title, publishers, publish_date, isbn_10, isbn_13, number_of_pages, physical_format, etc.

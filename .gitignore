@@ -35,14 +35,18 @@ env/
 # Open Library data files
 ol_dump_authors_latest.txt.gz
 ol_dump_works_latest.txt.gz
+ol_dump_editions_latest.txt.gz
 authors_csv/
 works_csv/
+editions_csv/
 test_authors_csv/
 test_works_csv/
+test_editions_csv/
 test_large_csv/
 test_authors.csv
 test_authors_sample.txt.gz
 test_works_sample.txt.gz
+test_editions_sample.txt.gz
 test_large_authors.txt.gz
 
 # OS

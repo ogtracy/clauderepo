@@ -52,6 +52,8 @@ test_work_creator_csv/
 work_creator_csv/
 test_quillent_work_csv/
 quillent_work_csv/
+test_work_editions_csv/
+work_editions_csv/
 
 # OS
 .DS_Store

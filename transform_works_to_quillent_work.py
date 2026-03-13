@@ -209,7 +209,7 @@ def transform_files(input_dir: str, output_dir: str, test_mode: bool = False):
             writer = csv.DictWriter(
                 f_out,
                 fieldnames=FIELDNAMES,
-                quoting=csv.QUOTE_NONNUMERIC,
+                quoting=csv.QUOTE_MINIMAL,
                 extrasaction="ignore",
             )
             writer.writeheader()

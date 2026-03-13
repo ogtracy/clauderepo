@@ -86,9 +86,13 @@ This is a common error-prone pattern where developers accidentally use `==` when
 
 ## 3. Data Processing Tools
 
-### Open Library Author Dump to CSV Converter
+### Open Library Data Dump Converters
 
-A utility script that downloads the Open Library author dump and converts it to a valid CSV file.
+Utility scripts that download Open Library data dumps and convert them to valid CSV files.
+
+#### Author Dump to CSV Converter
+
+Downloads and converts the Open Library author dump.
 
 **See**: [OPENLIBRARY_README.md](OPENLIBRARY_README.md) for detailed documentation.
 
@@ -115,3 +119,33 @@ python3 openlibrary_authors_to_csv.py
 - Progress indicators for download and conversion
 
 **Output**: Directory `authors_csv/` containing files like `authors_0001.csv`, `authors_0002.csv`, etc. with fields like name, birth_date, death_date, bio, wikipedia, website, etc.
+
+#### Works Dump to CSV Converter
+
+Downloads and converts the Open Library works dump (the abstract concept of books).
+
+**See**: [OPENLIBRARY_WORKS_README.md](OPENLIBRARY_WORKS_README.md) for detailed documentation.
+
+**Quick Start**:
+```bash
+# Test with sample data
+python3 openlibrary_works_to_csv.py --test
+
+# Run the test suite
+python3 test_works_converter.py
+
+# Full download (processes millions of records)
+python3 openlibrary_works_to_csv.py
+```
+
+**Features**:
+- Downloads Open Library's works dump (~3.5 GB compressed)
+- Parses tab-separated JSONL format
+- Extracts work information (title, authors, subjects, description, etc.)
+- **Splits into multiple CSV files** (10,000 records each)
+- **Proper CSV escaping** with semicolon-separated lists
+- Outputs clean CSV with 14 columns
+- Test mode for working with sample data
+- Progress indicators for download and conversion
+
+**Output**: Directory `works_csv/` containing files like `works_0001.csv`, `works_0002.csv`, etc. with fields like title, subtitle, authors, subjects, description, first_publish_date, etc.

@@ -148,25 +148,29 @@ def transform_row(row: dict) -> dict:
     date_str = row.get("first_publish_date", "")
     covers_str = row.get("covers", "")
 
+    # For integer columns, use None instead of "" for proper NULL in CSV
+    epoch_day = parse_epoch_day(date_str)
+    cover_id_str = first_cover_id(covers_str)
+
     return {
         "uuid":                   key,
         "title":                  row.get("title", ""),
         "sub_title":              row.get("subtitle", ""),
         "description":            row.get("description", ""),
         "first_publication_date": date_str,
-        "publication_date_epoch": parse_epoch_day(date_str) or "",
+        "publication_date_epoch": epoch_day if epoch_day is not None else None,
         "isbn_ten":               "",
         "isbn_thirteen":          "",
         "language_code":          "",
-        "num_of_pages":           "",
+        "num_of_pages":           None,  # INTEGER column
         "ol_id":                  ol_key_to_id(key) if key else "",
-        "cover_id":               first_cover_id(covers_str),
+        "cover_id":               int(cover_id_str) if cover_id_str else None,
         "featured_edition":       "",
         "featured_edition_id":    "",
-        "featured_edition_fk":    "",
+        "featured_edition_fk":    None,  # INTEGER column
         "series":                 "",
-        "position_in_series":     "",
-        "reading_id":             "",
+        "position_in_series":     None,  # INTEGER column
+        "reading_id":             None,  # INTEGER column
         "prh_id":                 "",
         "goodreads_resolved":     "false",
         "google_resolved":        "false",

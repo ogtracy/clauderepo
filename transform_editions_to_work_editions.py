@@ -114,16 +114,20 @@ def transform_row(row: dict) -> dict:
     lccn = first_value(row.get("lccn", ""), ",")
     oclc = first_value(row.get("oclc_numbers", ""), ",")
 
+    # For integer columns, use None instead of "" for proper NULL in CSV
+    year_str = extract_year(pub_date)
+    pages_str = row.get("number_of_pages", "")
+
     return {
         "uuid":             key,
         "work_id":          0,          # sentinel — resolve via post-load UPDATE
         "isbn_ten":         isbn_ten,
         "isbn_thirteen":    isbn_thirteen,
         "publication_date": pub_date,
-        "publication_year": extract_year(pub_date),
+        "publication_year": int(year_str) if year_str else None,
         "ol_id":            ol_key_to_id(key) if key else "",
         "work_ol_id":       work_ol_id,
-        "number_of_pages":  row.get("number_of_pages", ""),
+        "number_of_pages":  int(pages_str) if pages_str else None,
         "lccn":             lccn,
         "oclc_number":      oclc,
         "publisher":        publisher,

@@ -1,6 +1,6 @@
-# Classic Board Games
+# Python Projects Collection
 
-Two command-line board games where you can play against a computer opponent.
+A collection of Python projects including classic board games and data processing utilities.
 
 ## Games Included
 
@@ -83,3 +83,33 @@ test_board[move] = letter  # Assignment, properly simulates the move
 ```
 
 This is a common error-prone pattern where developers accidentally use `==` when they mean `=`.
+
+## 3. Data Processing Tools
+
+### Open Library Author Dump to CSV Converter
+
+A utility script that downloads the Open Library author dump and converts it to a valid CSV file.
+
+**See**: [OPENLIBRARY_README.md](OPENLIBRARY_README.md) for detailed documentation.
+
+**Quick Start**:
+```bash
+# Test with sample data
+python3 openlibrary_authors_to_csv.py --test
+
+# Run the test suite
+python3 test_converter.py
+
+# Full download (processes millions of records)
+python3 openlibrary_authors_to_csv.py
+```
+
+**Features**:
+- Downloads Open Library's author dump (~1.5 GB compressed)
+- Parses tab-separated JSONL format
+- Extracts author information (name, bio, dates, links, etc.)
+- Outputs clean CSV with 12 columns
+- Test mode for working with sample data
+- Progress indicators for download and conversion
+
+**Output**: `authors.csv` with fields like name, birth_date, death_date, bio, wikipedia, website, etc.

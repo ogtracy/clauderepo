@@ -48,6 +48,8 @@ test_authors_sample.txt.gz
 test_works_sample.txt.gz
 test_editions_sample.txt.gz
 test_large_authors.txt.gz
+test_work_creator_csv/
+work_creator_csv/
 
 # OS
 .DS_Store

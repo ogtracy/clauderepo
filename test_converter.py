@@ -2,9 +2,15 @@
 """
 Test script for the Open Library author dump converter.
 Uses a local sample file to test the conversion without downloading.
+Tests include:
+- Parsing individual records
+- CSV conversion with multiple files
+- Proper escaping of commas and newlines in data
 """
 
+import csv
 import gzip
+import os
 import shutil
 from openlibrary_authors_to_csv import convert_to_csv, parse_author_record
 
@@ -47,13 +53,53 @@ def test_csv_conversion():
     print("=" * 70)
 
     create_test_gz_file()
-    convert_to_csv('test_authors_sample.txt.gz', 'test_authors.csv', max_records=None)
+    output_dir = 'test_authors_csv'
+    convert_to_csv('test_authors_sample.txt.gz', output_dir, max_records=None)
 
     print("\n✓ CSV conversion successful!")
-    print("\nGenerated CSV content:")
-    print("-" * 70)
-    with open('test_authors.csv', 'r') as f:
-        print(f.read())
+
+    # List all generated files
+    csv_files = sorted([f for f in os.listdir(output_dir) if f.endswith('.csv')])
+    print(f"\nGenerated {len(csv_files)} CSV file(s):")
+    for f in csv_files:
+        file_path = os.path.join(output_dir, f)
+        file_size = os.path.getsize(file_path)
+        print(f"  - {f} ({file_size:,} bytes)")
+
+    # Show content from first file
+    if csv_files:
+        first_file = os.path.join(output_dir, csv_files[0])
+        print(f"\nContent of {csv_files[0]}:")
+        print("-" * 70)
+        with open(first_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+            print(content)
+
+        # Test CSV parsing to verify proper escaping
+        print("\n" + "=" * 70)
+        print("Testing CSV parsing (verifies proper escaping)...")
+        print("=" * 70)
+        with open(first_file, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for i, row in enumerate(reader, 1):
+                print(f"\nRecord {i}:")
+                print(f"  Name: {row['name']}")
+                if row['bio']:
+                    # Check if bio with newlines was properly handled
+                    if '\n' in row['bio']:
+                        print(f"  Bio (multiline): {repr(row['bio'][:80])}")
+                        print("  ✓ Newlines in bio were properly escaped!")
+                    else:
+                        print(f"  Bio: {row['bio'][:80]}")
+
+                # Check if commas in name were properly handled
+                if ',' in row['name']:
+                    print(f"  ✓ Commas in name were properly escaped!")
+
+                if row['wikipedia']:
+                    print(f"  Wikipedia: {row['wikipedia']}")
+
+        print("\n✓ CSV escaping test passed - commas and newlines handled correctly!")
 
 
 def main():

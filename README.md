@@ -108,8 +108,10 @@ python3 openlibrary_authors_to_csv.py
 - Downloads Open Library's author dump (~1.5 GB compressed)
 - Parses tab-separated JSONL format
 - Extracts author information (name, bio, dates, links, etc.)
+- **Splits into multiple CSV files** (10,000 records each)
+- **Proper CSV escaping** for commas and newlines in data
 - Outputs clean CSV with 12 columns
 - Test mode for working with sample data
 - Progress indicators for download and conversion
 
-**Output**: `authors.csv` with fields like name, birth_date, death_date, bio, wikipedia, website, etc.
+**Output**: Directory `authors_csv/` containing files like `authors_0001.csv`, `authors_0002.csv`, etc. with fields like name, birth_date, death_date, bio, wikipedia, website, etc.

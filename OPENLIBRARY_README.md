@@ -17,9 +17,12 @@ Open Library provides monthly data dumps of their entire catalog, including book
 - Downloads the latest author dump (~1.5 GB compressed)
 - Parses the tab-separated JSONL format
 - Extracts key author information into CSV columns
+- **Splits output into multiple files** (10,000 records per file)
+- **Proper CSV escaping** for commas and newlines in data
 - Handles various data formats (bio as string/dict, links, etc.)
 - Shows progress during download and conversion
 - Test mode for working with sample data
+- Memory-efficient line-by-line processing
 
 ## CSV Output Fields
 
@@ -60,6 +63,24 @@ python3 openlibrary_authors_to_csv.py
 
 **Note**: The full dump is ~1.5 GB compressed and contains millions of records. The conversion process may take significant time and disk space.
 
+### Output Structure
+
+The script creates a directory named `authors_csv/` containing multiple CSV files:
+
+```
+authors_csv/
+├── authors_0001.csv  (10,000 records)
+├── authors_0002.csv  (10,000 records)
+├── authors_0003.csv  (10,000 records)
+└── ...
+```
+
+Each file contains a maximum of 10,000 records with the header row. This makes the output more manageable for:
+- Importing into spreadsheet applications
+- Processing in batches
+- Version control and diffing
+- Parallel processing
+
 ## Running the Test Suite
 
 To verify the script works correctly with sample data:
@@ -72,6 +93,33 @@ This will:
 1. Parse sample author records
 2. Convert them to CSV
 3. Display the results
+4. Verify CSV escaping for commas and newlines
+
+To test file splitting with a large dataset:
+
+```bash
+python3 test_file_splitting.py
+```
+
+This creates 25,000 test records and verifies they are correctly split into multiple files.
+
+## Data Integrity & CSV Escaping
+
+The script uses Python's `csv.QUOTE_NONNUMERIC` quoting mode to ensure data integrity:
+
+- **Commas in names**: Properly quoted (e.g., `"Doe, Jane"`)
+- **Newlines in bio**: Preserved and escaped correctly
+- **Quotes in text**: Escaped with double quotes
+- **Special characters**: Handled without corruption
+
+Example of properly escaped data:
+
+```csv
+"Jane Doe, Jr.","","1965","","British mystery writer, novelist, and poet.
+Winner of multiple awards.","","",""
+```
+
+The multiline bio is preserved as a single CSV field, and the comma in the name doesn't break the CSV structure.
 
 ## Example Output
 
@@ -99,9 +147,10 @@ Each line contains tab-separated fields, with the last field being a JSON object
 ## Files
 
 - `openlibrary_authors_to_csv.py` - Main conversion script
-- `test_converter.py` - Test suite
+- `test_converter.py` - Test suite for basic functionality and CSV escaping
+- `test_file_splitting.py` - Test suite for file splitting with large datasets
 - `test_authors_sample.txt` - Sample data for testing
-- `authors.csv` - Output CSV file (created after running the script)
+- `authors_csv/` - Output directory containing CSV files (created after running the script)
 
 ## Troubleshooting
 

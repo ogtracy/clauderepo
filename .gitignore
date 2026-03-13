@@ -34,9 +34,12 @@ env/
 
 # Open Library data files
 ol_dump_authors_latest.txt.gz
-authors.csv
+authors_csv/
+test_authors_csv/
+test_large_csv/
 test_authors.csv
 test_authors_sample.txt.gz
+test_large_authors.txt.gz
 
 # OS
 .DS_Store

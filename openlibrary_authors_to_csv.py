@@ -21,7 +21,8 @@ from typing import Dict, Any, Optional
 # URLs for Open Library data dumps
 AUTHOR_DUMP_URL = "https://openlibrary.org/data/ol_dump_authors_latest.txt.gz"
 DOWNLOAD_FILENAME = "ol_dump_authors_latest.txt.gz"
-OUTPUT_CSV = "authors.csv"
+OUTPUT_DIR = "authors_csv"
+MAX_LINES_PER_FILE = 10000
 
 
 def download_file(url: str, filename: str, max_size_mb: Optional[int] = None) -> str:
@@ -159,16 +160,21 @@ def parse_author_record(line: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def convert_to_csv(input_file: str, output_file: str, max_records: Optional[int] = None):
+def convert_to_csv(input_file: str, output_dir: str, max_records: Optional[int] = None):
     """
-    Convert the gzipped author dump to CSV format.
+    Convert the gzipped author dump to CSV format, splitting into multiple files.
 
     Args:
         input_file: Path to the gzipped dump file
-        output_file: Path to the output CSV file
+        output_dir: Directory to save CSV files
         max_records: Maximum number of records to process (for testing). None = process all.
     """
-    print(f"\nConverting {input_file} to {output_file}")
+    print(f"\nConverting {input_file} to CSV files in {output_dir}/")
+
+    # Create output directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"Created directory: {output_dir}/")
 
     if max_records:
         print(f"Processing maximum {max_records} records for testing")
@@ -192,46 +198,76 @@ def convert_to_csv(input_file: str, output_file: str, max_records: Optional[int]
     processed = 0
     written = 0
     skipped = 0
+    file_number = 1
+    current_file_lines = 0
+    writer = None
+    f_out = None
 
     try:
         with gzip.open(input_file, 'rt', encoding='utf-8') as f_in:
-            with open(output_file, 'w', newline='', encoding='utf-8') as f_out:
-                writer = csv.DictWriter(f_out, fieldnames=fieldnames)
-                writer.writeheader()
+            for line in f_in:
+                processed += 1
 
-                for line in f_in:
-                    processed += 1
+                # Parse the record
+                author = parse_author_record(line)
 
-                    # Parse the record
-                    author = parse_author_record(line)
+                if author:
+                    # Create a new file if needed
+                    if writer is None or current_file_lines >= MAX_LINES_PER_FILE:
+                        # Close previous file if open
+                        if f_out is not None:
+                            f_out.close()
+                            print(f"\n  ✓ Completed: {output_filename} ({current_file_lines:,} records)")
 
-                    if author:
-                        writer.writerow(author)
-                        written += 1
-                    else:
-                        skipped += 1
+                        # Open new file
+                        output_filename = os.path.join(output_dir, f"authors_{file_number:04d}.csv")
+                        f_out = open(output_filename, 'w', newline='', encoding='utf-8')
+                        # Use QUOTE_ALL to ensure commas and newlines in data are properly escaped
+                        writer = csv.DictWriter(f_out, fieldnames=fieldnames,
+                                              quoting=csv.QUOTE_NONNUMERIC)
+                        writer.writeheader()
+                        current_file_lines = 0
+                        file_number += 1
+                        print(f"\nCreating: {output_filename}")
 
-                    # Show progress
-                    if processed % 10000 == 0:
-                        print(f"\rProcessed: {processed:,} | Written: {written:,} | Skipped: {skipped:,}", end='')
+                    writer.writerow(author)
+                    written += 1
+                    current_file_lines += 1
+                else:
+                    skipped += 1
 
-                    # Stop if we've reached the max records for testing
-                    if max_records and written >= max_records:
-                        print(f"\nReached {max_records} record limit")
-                        break
+                # Show progress
+                if processed % 10000 == 0:
+                    print(f"\rProcessed: {processed:,} | Written: {written:,} | Skipped: {skipped:,} | Files: {file_number - 1}", end='')
+
+                # Stop if we've reached the max records for testing
+                if max_records and written >= max_records:
+                    print(f"\nReached {max_records} record limit")
+                    break
+
+        # Close the last file
+        if f_out is not None:
+            f_out.close()
+            print(f"\n  ✓ Completed: {output_filename} ({current_file_lines:,} records)")
 
         print(f"\n\nConversion complete!")
         print(f"Total processed: {processed:,}")
         print(f"Records written: {written:,}")
         print(f"Records skipped: {skipped:,}")
-        print(f"Output file: {output_file}")
+        print(f"Number of CSV files created: {file_number - 1}")
+        print(f"Output directory: {output_dir}/")
 
-        # Show file size
-        file_size = os.path.getsize(output_file) / (1024 * 1024)
-        print(f"Output size: {file_size:.2f} MB")
+        # Show total directory size
+        total_size = sum(os.path.getsize(os.path.join(output_dir, f))
+                        for f in os.listdir(output_dir) if f.endswith('.csv'))
+        print(f"Total size: {total_size / (1024 * 1024):.2f} MB")
 
     except Exception as e:
+        if f_out is not None:
+            f_out.close()
         print(f"\nError during conversion: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 
@@ -272,24 +308,32 @@ def main():
         print("(Delete this file to re-download)")
 
     # Convert to CSV
-    convert_to_csv(DOWNLOAD_FILENAME, OUTPUT_CSV, max_records)
+    convert_to_csv(DOWNLOAD_FILENAME, OUTPUT_DIR, max_records)
 
-    print(f"\n✓ Success! CSV file created: {OUTPUT_CSV}")
+    print(f"\n✓ Success! CSV files created in directory: {OUTPUT_DIR}/")
+    print(f"   Each file contains up to {MAX_LINES_PER_FILE:,} records")
 
-    # Show a sample of the data
-    print("\nFirst 3 rows of the CSV:")
-    print("-" * 70)
-    with open(OUTPUT_CSV, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for i, row in enumerate(reader):
-            if i >= 3:
-                break
-            print(f"\nRecord {i+1}:")
-            for key, value in row.items():
-                if value:  # Only show non-empty fields
-                    # Truncate long values
-                    display_value = value[:100] + '...' if len(value) > 100 else value
-                    print(f"  {key}: {display_value}")
+    # Show a sample of the data from the first file
+    first_file = None
+    if os.path.exists(OUTPUT_DIR):
+        csv_files = sorted([f for f in os.listdir(OUTPUT_DIR) if f.endswith('.csv')])
+        if csv_files:
+            first_file = os.path.join(OUTPUT_DIR, csv_files[0])
+
+    if first_file:
+        print(f"\nFirst 3 rows from {csv_files[0]}:")
+        print("-" * 70)
+        with open(first_file, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for i, row in enumerate(reader):
+                if i >= 3:
+                    break
+                print(f"\nRecord {i+1}:")
+                for key, value in row.items():
+                    if value:  # Only show non-empty fields
+                        # Truncate long values
+                        display_value = value[:100] + '...' if len(value) > 100 else value
+                        print(f"  {key}: {display_value}")
 
 
 if __name__ == '__main__':

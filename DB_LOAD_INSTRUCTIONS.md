@@ -30,7 +30,7 @@ python3 openlibrary_editions_to_csv.py > parse_editions.log 2>&1 &
 wait
 ```
 
-Then transform authors and works in parallel, followed by editions:
+Then transform authors and works in parallel, followed by tags and editions:
 
 ```bash
 # Transform authors and works (run in parallel)
@@ -38,9 +38,11 @@ python3 transform_authors_to_work_creator.py > transform_authors.log 2>&1 &
 python3 transform_works_to_quillent_work.py  > transform_works.log   2>&1 &
 wait
 
-# Transform editions (requires quillent_work CSVs)
-python3 transform_editions_to_work_editions.py > transform_editions.log 2>&1
-# → work_creator_csv/, quillent_work_csv/, work_editions_csv/
+# Process tags and transform editions (run in parallel, both require quillent_work CSVs)
+python3 process_tags.py                      > process_tags.log      2>&1 &
+python3 transform_editions_to_work_editions.py > transform_editions.log 2>&1 &
+wait
+# → work_creator_csv/, quillent_work_csv/, tags_csv/, work_editions_csv/
 ```
 
 ---
@@ -70,6 +72,14 @@ DROP INDEX IF EXISTS idx_work_editions_ol_id;
 DROP INDEX IF EXISTS idx_work_editions_isbn_ten;
 DROP INDEX IF EXISTS idx_work_editions_isbn_thirteen;
 DROP INDEX IF EXISTS idx_work_editions_publisher;
+
+-- search_tag
+DROP INDEX IF EXISTS idx_search_tag_tag_name;
+DROP INDEX IF EXISTS idx_search_tag_prevalence;
+
+-- work_tags
+DROP INDEX IF EXISTS idx_work_tags_work_id;
+DROP INDEX IF EXISTS idx_work_tags_tag_id;
 ```
 
 ---
@@ -132,7 +142,41 @@ SELECT setval('quillent_work_id_seq', (SELECT MAX(id) FROM quillent_work));
 
 ---
 
-## Step 5 — Load work_editions
+## Step 5 — Load search_tag
+
+No FK dependencies. The CSV includes pre-assigned `id` values.
+
+```bash
+psql -d <db> -c "\copy search_tag \
+    (id, uuid, tag_name, prevalence, weight) \
+    FROM 'tags_csv/search_tag.csv' CSV HEADER;"
+```
+
+Verify:
+```sql
+SELECT COUNT(*) FROM search_tag;
+-- Expected: ~1-2 million unique tags
+
+SELECT MIN(id), MAX(id) FROM search_tag;
+-- Should be sequential: 1 to ~1-2 million
+
+-- Most common tags
+SELECT tag_name, prevalence FROM search_tag ORDER BY prevalence DESC LIMIT 20;
+```
+
+---
+
+## Step 6 — Reset search_tag sequence
+
+Reset the sequence for future INSERTs:
+
+```sql
+SELECT setval('search_tag_id_seq', (SELECT MAX(id) FROM search_tag));
+```
+
+---
+
+## Step 7 — Load work_editions
 
 `work_id` is already resolved — no UPDATE JOIN needed!
 
@@ -168,7 +212,39 @@ DELETE FROM work_editions WHERE work_id = 0;
 
 ---
 
-## Step 6 — Rebuild all secondary indexes
+## Step 8 — Load work_tags
+
+Junction table linking works to tags. Load after both quillent_work and search_tag
+are loaded (foreign key constraints).
+
+```bash
+psql -d <db> -c "\copy work_tags \
+    (work_id, tag_id) \
+    FROM 'tags_csv/work_tags.csv' CSV HEADER;"
+```
+
+Verify:
+```sql
+SELECT COUNT(*) FROM work_tags;
+-- Expected: ~90-100 million work-tag associations
+
+-- Average tags per work
+SELECT AVG(tag_count) as avg_tags_per_work FROM (
+    SELECT COUNT(*) as tag_count FROM work_tags GROUP BY work_id
+) t;
+
+-- Works with most tags
+SELECT w.title, COUNT(*) as tag_count
+FROM work_tags wt
+JOIN quillent_work w ON wt.work_id = w.id
+GROUP BY w.id, w.title
+ORDER BY tag_count DESC
+LIMIT 10;
+```
+
+---
+
+## Step 9 — Rebuild all secondary indexes
 
 Create indexes after the data is fully loaded. Building on a populated table
 uses a single sequential scan and is much faster than incremental updates.
@@ -208,6 +284,18 @@ CREATE INDEX idx_work_editions_isbn_thirteen
 CREATE INDEX idx_work_editions_publisher
     ON work_editions (publisher)
     WHERE publisher IS NOT NULL AND publisher <> '';
+
+-- search_tag
+CREATE INDEX idx_search_tag_tag_name
+    ON search_tag (tag_name);
+CREATE INDEX idx_search_tag_prevalence
+    ON search_tag (prevalence DESC);
+
+-- work_tags
+CREATE INDEX idx_work_tags_work_id
+    ON work_tags (work_id);
+CREATE INDEX idx_work_tags_tag_id
+    ON work_tags (tag_id);
 ```
 
 > The partial indexes (`WHERE column <> ''`) skip the large number of empty
@@ -215,7 +303,7 @@ CREATE INDEX idx_work_editions_publisher
 
 ---
 
-## Step 7 — Analyze
+## Step 10 — Analyze
 
 Update the query planner statistics now that the data and indexes are in place:
 
@@ -223,6 +311,8 @@ Update the query planner statistics now that the data and indexes are in place:
 ANALYZE work_creator;
 ANALYZE quillent_work;
 ANALYZE work_editions;
+ANALYZE search_tag;
+ANALYZE work_tags;
 ```
 
 ---
@@ -232,18 +322,27 @@ ANALYZE work_editions;
 | Step | Action |
 |------|--------|
 | 0a | Parse dumps → CSV (authors, works, editions) |
-| 0b | Transform authors, works, editions → DB-ready CSV (with pre-assigned IDs) |
+| 0b | Transform authors, works → DB-ready CSV (with pre-assigned IDs) |
+| 0c | Process tags (from work subjects) |
+| 0d | Transform editions (with pre-assigned work_id) |
 | 1 | Drop secondary indexes |
 | 2 | COPY work_creator |
 | 3 | COPY quillent_work (with pre-assigned id column) |
 | 4 | Reset quillent_work_id_seq |
-| 5 | COPY work_editions (work_id already resolved) |
-| 6 | Rebuild all secondary indexes |
-| 7 | ANALYZE |
+| 5 | COPY search_tag (with pre-assigned id column) |
+| 6 | Reset search_tag_id_seq |
+| 7 | COPY work_editions (work_id already resolved) |
+| 8 | COPY work_tags (junction table) |
+| 9 | Rebuild all secondary indexes |
+| 10 | ANALYZE |
 
-**Key difference from traditional workflows:** IDs are pre-assigned in the CSV and
-editions reference works by these pre-assigned IDs. Pure CSV-based workflow with no
-database queries or post-load UPDATE JOIN. This saves hours on large datasets.
+**Key differences from traditional workflows:**
+- IDs are pre-assigned in works and tags CSVs
+- Editions reference works by pre-assigned IDs
+- Tags are extracted and cleaned during transform
+- Junction table links works to tags via pre-assigned IDs
+- Pure CSV-based workflow with no database queries or post-load UPDATE JOIN
+- This saves hours on large datasets
 
 ---
 

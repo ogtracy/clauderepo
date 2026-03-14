@@ -207,7 +207,9 @@ python3 transform_works_to_quillent_work.py
 ```
 
 - Input:  `works_csv/`
-- Output: `quillent_work_csv/quillent_work_0001.csv`, …
+- Output:
+  - `quillent_work_csv/quillent_work_0001.csv`, …
+  - `quillent_work_csv/work_subjects.csv` (intermediate file for tag processing)
 - Notable mappings:
   - `key` → `uuid` and `ol_id` (bare suffix)
   - `subtitle` → `sub_title`
@@ -218,6 +220,29 @@ python3 transform_works_to_quillent_work.py
   - `goodreads_resolved`, `google_resolved` → `false`
   - Fields not in OL works data (`isbn_ten/thirteen`, `language_code`,
     `num_of_pages`, `featured_edition*`, `series`, `prh_id`) → empty
+  - `subjects` → extracted to `work_subjects.csv` for tag processing
+
+### work_subjects.csv → tags_csv/ (tags)
+
+**PREREQUISITE:** work_subjects.csv must exist (output of transform_works_to_quillent_work.py).
+
+```bash
+python3 process_tags.py
+```
+
+This script processes Open Library subjects into clean tags.
+
+- Input:  `quillent_work_csv/work_subjects.csv`
+- Output:
+  - `tags_csv/search_tag.csv` (id, uuid, tag_name, prevalence, weight)
+  - `tags_csv/work_tags.csv` (work_id, tag_id)
+- Processing:
+  - Splits subjects on delimiters: `;` `,` `|` `/` `:` (when followed by space)
+  - Cleans tags: lowercase, trim, normalize whitespace, remove punctuation
+  - Filters by length: 2-80 characters
+  - Assigns sequential IDs (sorted by prevalence, descending)
+  - Calculates weight using inverse document frequency
+  - Keeps all tags (no deduplication, no blocklist)
 
 ### editions_csv/ → work_editions_csv/
 
@@ -248,7 +273,7 @@ eliminating the need for post-load UPDATE JOIN.
 
 ### Running transforms
 
-**Authors and works** can run in parallel. **Editions** must run AFTER works transform completes:
+**Authors and works** can run in parallel. **Tags and editions** must run AFTER works transform completes:
 
 ```bash
 # Step 1: Transform authors and works in parallel
@@ -256,8 +281,10 @@ python3 transform_authors_to_work_creator.py   > transform_authors.log 2>&1 &
 python3 transform_works_to_quillent_work.py    > transform_works.log   2>&1 &
 wait
 
-# Step 2: Transform editions (requires quillent_work CSVs)
-python3 transform_editions_to_work_editions.py > transform_editions.log 2>&1
+# Step 2: Transform tags and editions in parallel (both require quillent_work CSVs)
+python3 process_tags.py                        > process_tags.log      2>&1 &
+python3 transform_editions_to_work_editions.py > transform_editions.log 2>&1 &
+wait
 ```
 
 ---
@@ -268,17 +295,23 @@ See **[DB_LOAD_INSTRUCTIONS.md](DB_LOAD_INSTRUCTIONS.md)** for the complete
 loading procedure. The condensed sequence is:
 
 ```
-1. Drop secondary indexes on all three tables
+1. Drop secondary indexes on all tables
 2. COPY work_creator       (work_creator_csv/)
 3. COPY quillent_work      (quillent_work_csv/, with pre-assigned IDs)
 4. Reset quillent_work sequence
-5. COPY work_editions      (work_editions_csv/, work_id already resolved)
-6. Rebuild all secondary indexes
-7. ANALYZE
+5. COPY search_tag         (tags_csv/, with pre-assigned IDs)
+6. Reset search_tag sequence
+7. COPY work_editions      (work_editions_csv/, work_id already resolved)
+8. COPY work_tags          (tags_csv/, junction table)
+9. Rebuild all secondary indexes
+10. ANALYZE
 ```
 
-**Key workflow change:** IDs are pre-assigned in the works CSV, and editions
-reference these IDs directly. No database queries or post-load UPDATE JOIN needed.
+**Key workflow changes:**
+- IDs are pre-assigned in works and tags CSVs
+- Editions reference works by pre-assigned IDs
+- Tags reference works by pre-assigned IDs
+- No database queries or post-load UPDATE JOIN needed
 
 ---
 
@@ -296,11 +329,13 @@ python3 openlibrary_works_to_csv.py    > parse_works.log    2>&1 &
 python3 openlibrary_editions_to_csv.py > parse_editions.log 2>&1 &
 wait
 
-# Stage 3 — transform (authors + works in parallel, then editions)
+# Stage 3 — transform (authors + works in parallel, then tags + editions)
 python3 transform_authors_to_work_creator.py > transform_authors.log 2>&1 &
 python3 transform_works_to_quillent_work.py  > transform_works.log   2>&1 &
 wait
-python3 transform_editions_to_work_editions.py > transform_editions.log 2>&1
+python3 process_tags.py                      > process_tags.log      2>&1 &
+python3 transform_editions_to_work_editions.py > transform_editions.log 2>&1 &
+wait
 
 # Stage 4 — load (see DB_LOAD_INSTRUCTIONS.md for full SQL)
 psql -d <db> -f pre_load.sql          # drop indexes
@@ -314,14 +349,19 @@ done
 for f in quillent_work_csv/quillent_work_*.csv; do
     psql -d <db> -c "\copy quillent_work (id,uuid,title,sub_title,description,first_publication_date,publication_date_epoch,isbn_ten,isbn_thirteen,language_code,num_of_pages,ol_id,cover_id,featured_edition,featured_edition_id,featured_edition_fk,series,position_in_series,reading_id,prh_id,goodreads_resolved,google_resolved,featured_covers) FROM '$f' CSV HEADER;"
 done
-
-# Reset works sequence
 psql -d <db> -c "SELECT setval('quillent_work_id_seq', (SELECT MAX(id) FROM quillent_work));"
+
+# Load tags (with pre-assigned IDs)
+psql -d <db> -c "\copy search_tag (id,uuid,tag_name,prevalence,weight) FROM 'tags_csv/search_tag.csv' CSV HEADER;"
+psql -d <db> -c "SELECT setval('search_tag_id_seq', (SELECT MAX(id) FROM search_tag));"
 
 # Load editions (work_id already resolved)
 for f in work_editions_csv/work_editions_*.csv; do
     psql -d <db> -c "\copy work_editions (uuid,work_id,isbn_ten,isbn_thirteen,publication_date,publication_year,ol_id,work_ol_id,number_of_pages,lccn,oclc_number,publisher,series,goodreads_id,google_id,asin,is_featured) FROM '$f' CSV HEADER;"
 done
+
+# Load work-tag associations
+psql -d <db> -c "\copy work_tags (work_id,tag_id) FROM 'tags_csv/work_tags.csv' CSV HEADER;"
 
 psql -d <db> -f post_load.sql         # rebuild indexes, ANALYZE
 ```

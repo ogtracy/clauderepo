@@ -24,7 +24,7 @@ from typing import Dict, Any, Optional, List
 WORKS_DUMP_URL = "https://openlibrary.org/data/ol_dump_works_latest.txt.gz"
 DOWNLOAD_FILENAME = "ol_dump_works_latest.txt.gz"
 OUTPUT_DIR = "works_csv"
-MAX_LINES_PER_FILE = 10000
+MAX_LINES_PER_FILE = 1000000
 
 
 def download_file(url: str, filename: str, max_size_mb: Optional[int] = None) -> str:
@@ -161,11 +161,12 @@ def parse_work_record(line: str) -> Optional[Dict[str, Any]]:
             result['subject_times'] = '; '.join(subject_times[:10])
 
         # Handle description (can be a string or dict)
+        # Handle description (can be a string or dict)
         description = work_data.get('description')
         if isinstance(description, dict):
-            result['description'] = description.get('value', '')
+            result['description'] = trim_text(description.get('value', ''), MAX_DESCRIPTION_LENGTH)
         elif isinstance(description, str):
-            result['description'] = description
+            result['description'] = trim_text(description, MAX_DESCRIPTION_LENGTH)
 
         # Handle covers (list of cover IDs)
         covers = work_data.get('covers', [])
@@ -360,6 +361,18 @@ def main():
                         # Truncate long values
                         display_value = value[:100] + '...' if len(value) > 100 else value
                         print(f"  {key}: {display_value}")
+
+MAX_DESCRIPTION_LENGTH = 5000
+
+
+def trim_text(value: Any, max_len: int) -> str:
+    """Convert to string, strip whitespace, and trim to max_len."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if len(text) > max_len:
+        return text[:max_len]
+    return text
 
 
 if __name__ == '__main__':

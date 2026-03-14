@@ -44,8 +44,12 @@ import sys
 from datetime import date, datetime
 from typing import Optional
 
+
+csv.field_size_limit(10_000_000)
+
 INPUT_DIR = "works_csv"
 OUTPUT_DIR = "quillent_work_csv"
+MAX_DESCRIPTION = 5000  # choose your limit
 
 # Excluded from output: id (auto PK)
 FIELDNAMES = [
@@ -151,12 +155,15 @@ def transform_row(row: dict) -> dict:
     # For integer columns, use None instead of "" for proper NULL in CSV
     epoch_day = parse_epoch_day(date_str)
     cover_id_str = first_cover_id(covers_str)
+    desc = row.get("description", "")
+    if desc and len(desc) > MAX_DESCRIPTION:
+        desc = desc[:MAX_DESCRIPTION]
 
     return {
         "uuid":                   key,
         "title":                  row.get("title", ""),
         "sub_title":              row.get("subtitle", ""),
-        "description":            row.get("description", ""),
+        "description":            desc,
         "first_publication_date": date_str,
         "publication_date_epoch": epoch_day if epoch_day is not None else None,
         "isbn_ten":               "",

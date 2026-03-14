@@ -24,7 +24,7 @@ from typing import Dict, Any, Optional, List
 EDITIONS_DUMP_URL = "https://openlibrary.org/data/ol_dump_editions_latest.txt.gz"
 DOWNLOAD_FILENAME = "ol_dump_editions_latest.txt.gz"
 OUTPUT_DIR = "editions_csv"
-MAX_LINES_PER_FILE = 10000
+MAX_LINES_PER_FILE = 1000000
 
 
 def download_file(url: str, filename: str, max_size_mb: Optional[int] = None) -> str:

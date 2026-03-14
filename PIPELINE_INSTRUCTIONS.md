@@ -221,16 +221,22 @@ python3 transform_works_to_quillent_work.py
 
 ### editions_csv/ → work_editions_csv/
 
+**PREREQUISITE:** quillent_work must be loaded into PostgreSQL first (see Stage 4).
+
 ```bash
-python3 transform_editions_to_work_editions.py
+python3 transform_editions_to_work_editions.py --db <database> [--user <user>]
 ```
+
+This script queries PostgreSQL to resolve `work_id` during transformation, eliminating
+the need for post-load UPDATE JOIN.
 
 - Input:  `editions_csv/`
 - Output: `work_editions_csv/work_editions_0001.csv`, …
+- Database query: `SELECT id, ol_id FROM quillent_work` (builds ol_id → id mapping)
 - Notable mappings:
   - `key` → `uuid` and `ol_id` (bare suffix e.g. `OL1M`)
   - `works[0]` → `work_ol_id` (first linked work's bare ID e.g. `OL1W`)
-  - `work_id` → `0` sentinel (resolved in Stage 4 via UPDATE JOIN)
+  - `work_id` → resolved from database mapping (0 if work not found)
   - `publishers[0]` → `publisher` (first semicolon-delimited value)
   - `isbn_10[0]` / `isbn_13[0]` → `isbn_ten` / `isbn_thirteen`
   - `lccn[0]` → `lccn`, `oclc_numbers[0]` → `oclc_number`
@@ -240,14 +246,32 @@ python3 transform_editions_to_work_editions.py
   - Fields not in OL data (`series`, `goodreads_id`, `google_id`, `asin`)
     → empty
 
-### Running all three in parallel
+Connection parameters can be passed via command line or environment variables:
+```bash
+# Command line
+python3 transform_editions_to_work_editions.py --db mydb --host localhost --user postgres
+
+# Environment variables
+export PGDATABASE=mydb
+export PGUSER=postgres
+python3 transform_editions_to_work_editions.py
+```
+
+### Running transforms
+
+**Authors and works** can run in parallel. **Editions** must run AFTER works are loaded:
 
 ```bash
+# Step 1: Transform authors and works in parallel
 python3 transform_authors_to_work_creator.py   > transform_authors.log 2>&1 &
 python3 transform_works_to_quillent_work.py    > transform_works.log   2>&1 &
-python3 transform_editions_to_work_editions.py > transform_editions.log 2>&1 &
 wait
-echo "All transforms complete"
+
+# Step 2: Load authors and works (see Stage 4)
+# ...
+
+# Step 3: Transform editions (requires works in database)
+python3 transform_editions_to_work_editions.py --db mydb > transform_editions.log 2>&1
 ```
 
 ---
@@ -259,16 +283,16 @@ loading procedure. The condensed sequence is:
 
 ```
 1. Drop secondary indexes on all three tables
-2. Disable FK triggers on work_editions
-3. COPY work_creator       (work_creator_csv/)
-4. COPY quillent_work      (quillent_work_csv/)
-5. COPY work_editions      (work_editions_csv/, work_id = 0 sentinel)
-6. CREATE INDEX idx_quillent_work_ol_id
-7. UPDATE work_editions SET work_id = quillent_work.id WHERE ol_id matches
-8. Re-enable FK constraint
-9. Rebuild all secondary indexes
-10. ANALYZE
+2. COPY work_creator       (work_creator_csv/)
+3. COPY quillent_work      (quillent_work_csv/)
+4. Transform editions      (queries DB for work_id mapping)
+5. COPY work_editions      (work_editions_csv/, work_id already resolved)
+6. Rebuild all secondary indexes
+7. ANALYZE
 ```
+
+**Key workflow change:** Editions are transformed AFTER works are loaded, so
+work_id is resolved during transformation. No post-load UPDATE JOIN needed.
 
 ---
 
@@ -286,25 +310,28 @@ python3 openlibrary_works_to_csv.py    > parse_works.log    2>&1 &
 python3 openlibrary_editions_to_csv.py > parse_editions.log 2>&1 &
 wait
 
-# Stage 3 — transform (run in parallel)
-python3 transform_authors_to_work_creator.py   > transform_authors.log   2>&1 &
-python3 transform_works_to_quillent_work.py    > transform_works.log     2>&1 &
-python3 transform_editions_to_work_editions.py > transform_editions.log  2>&1 &
+# Stage 3a — transform authors and works (run in parallel)
+python3 transform_authors_to_work_creator.py > transform_authors.log 2>&1 &
+python3 transform_works_to_quillent_work.py  > transform_works.log   2>&1 &
 wait
 
-# Stage 4 — load (see DB_LOAD_INSTRUCTIONS.md for full SQL)
-# Abbreviated example:
-psql -d <db> -f pre_load.sql          # drop indexes, disable FK
+# Stage 4a — load authors and works (see DB_LOAD_INSTRUCTIONS.md for full SQL)
+psql -d <db> -f pre_load.sql          # drop indexes
 for f in work_creator_csv/work_creator_*.csv; do
     psql -d <db> -c "\copy work_creator (uuid,creator_name,personal_name,birth_date,death_date,ol_id) FROM '$f' CSV HEADER;"
 done
 for f in quillent_work_csv/quillent_work_*.csv; do
     psql -d <db> -c "\copy quillent_work (uuid,title,sub_title,description,first_publication_date,publication_date_epoch,isbn_ten,isbn_thirteen,language_code,num_of_pages,ol_id,cover_id,featured_edition,featured_edition_id,featured_edition_fk,series,position_in_series,reading_id,prh_id,goodreads_resolved,google_resolved,featured_covers) FROM '$f' CSV HEADER;"
 done
+
+# Stage 3b — transform editions (requires works in DB)
+python3 transform_editions_to_work_editions.py --db <db> > transform_editions.log 2>&1
+
+# Stage 4b — load editions
 for f in work_editions_csv/work_editions_*.csv; do
     psql -d <db> -c "\copy work_editions (uuid,work_id,isbn_ten,isbn_thirteen,publication_date,publication_year,ol_id,work_ol_id,number_of_pages,lccn,oclc_number,publisher,series,goodreads_id,google_id,asin,is_featured) FROM '$f' CSV HEADER;"
 done
-psql -d <db> -f post_load.sql         # resolve FK, rebuild indexes, ANALYZE
+psql -d <db> -f post_load.sql         # rebuild indexes, ANALYZE
 ```
 
 ---

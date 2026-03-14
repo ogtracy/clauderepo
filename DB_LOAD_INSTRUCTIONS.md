@@ -8,28 +8,45 @@ into the three target tables.
 ```
 work_creator          (no FK dependencies)
 quillent_work         (no FK dependencies)
-work_editions         (work_id FK → quillent_work.id — resolved post-load)
+work_editions         (work_id FK → quillent_work.id — resolved during transform)
 ```
+
+**IMPORTANT:** Editions are transformed AFTER works are loaded. The editions
+transform script queries the database to resolve work_id during transformation,
+eliminating the need for post-load UPDATE JOIN.
 
 ---
 
 ## Step 0 — Generate the CSV files
 
-Run the three converter scripts in any order (they are independent):
+### Phase 1: Parse dumps and transform authors/works
+
+Run the three parser scripts in parallel (they are independent):
 
 ```bash
 # Each takes several hours on the full dump; --test flag for a quick trial
-python3 openlibrary_authors_to_csv.py      # → authors_csv/
-python3 openlibrary_works_to_csv.py        # → works_csv/
-python3 openlibrary_editions_to_csv.py     # → editions_csv/
+python3 openlibrary_authors_to_csv.py  > parse_authors.log  2>&1 &
+python3 openlibrary_works_to_csv.py    > parse_works.log    2>&1 &
+python3 openlibrary_editions_to_csv.py > parse_editions.log 2>&1 &
+wait
 ```
 
-Then run the three transform scripts to produce DB-ready CSV:
+Then transform authors and works (editions come later):
 
 ```bash
-python3 transform_authors_to_work_creator.py     # → work_creator_csv/
-python3 transform_works_to_quillent_work.py      # → quillent_work_csv/
-python3 transform_editions_to_work_editions.py   # → work_editions_csv/
+python3 transform_authors_to_work_creator.py  # → work_creator_csv/
+python3 transform_works_to_quillent_work.py   # → quillent_work_csv/
+```
+
+### Phase 2: Transform editions (after loading works)
+
+The editions transform script requires works to be loaded first:
+
+```bash
+# Run AFTER Step 4 (loading quillent_work)
+python3 transform_editions_to_work_editions.py --db <database> \
+    [--host <host>] [--port <port>] [--user <user>]
+# → work_editions_csv/ with work_id already resolved
 ```
 
 ---
@@ -63,35 +80,7 @@ DROP INDEX IF EXISTS idx_work_editions_publisher;
 
 ---
 
-## Step 2 — Pre-load: disable the work_editions FK constraint
-
-`work_editions.work_id` is a NOT NULL FK to `quillent_work.id`. The CSV files
-contain `work_id = 0` as a sentinel value (the real integer ID is only known
-after `quillent_work` is loaded). Disable the constraint before loading and
-re-enable it after the FK is resolved.
-
-```sql
-ALTER TABLE work_editions
-    DISABLE TRIGGER ALL;          -- suppresses FK trigger checks during COPY
-
--- If the constraint is defined as NOT DEFERRABLE you may need to drop and
--- re-add it instead:
---
--- ALTER TABLE work_editions DROP CONSTRAINT fk_work_editions_work_id;
-```
-
-> **Alternative without ALTER TABLE** — connect with a superuser and run:
-> ```sql
-> SET session_replication_role = replica;
-> -- (run all COPY commands in this session)
-> SET session_replication_role = DEFAULT;
-> ```
-> This suppresses all FK and trigger checks for the session without touching
-> the table definition.
-
----
-
-## Step 3 — Load work_creator
+## Step 2 — Load work_creator
 
 No FK dependencies. Load first.
 
@@ -111,10 +100,10 @@ SELECT COUNT(*) FROM work_creator;
 
 ---
 
-## Step 4 — Load quillent_work
+## Step 3 — Load quillent_work
 
-No FK dependencies. Load second (must precede work_editions so the FK
-resolution UPDATE in Step 7 has rows to join against).
+No FK dependencies. Load second (must precede work_editions transform so the
+editions transform script can query for work_id mappings).
 
 ```bash
 for f in quillent_work_csv/quillent_work_*.csv; do
@@ -137,9 +126,28 @@ SELECT COUNT(*) FROM quillent_work;
 
 ---
 
+## Step 4 — Transform editions (with work_id resolution)
+
+**NOW** run the editions transform script, which queries the database to resolve
+work_id during transformation:
+
+```bash
+python3 transform_editions_to_work_editions.py --db <database> \
+    [--host <host>] [--port <port>] [--user <user>]
+# → work_editions_csv/ with work_id already resolved
+```
+
+The script will:
+1. Query `SELECT id, ol_id FROM quillent_work` to build an in-memory mapping
+2. Transform each edition, setting `work_id` from the mapping
+3. Write `work_id=0` for editions whose work is not in the database
+4. Report how many editions have unresolved work_id
+
+---
+
 ## Step 5 — Load work_editions
 
-`work_id` is loaded as 0 (sentinel) and resolved in Step 7.
+`work_id` is already resolved — no UPDATE JOIN needed!
 
 ```bash
 for f in work_editions_csv/work_editions_*.csv; do
@@ -156,81 +164,24 @@ Verify:
 ```sql
 SELECT COUNT(*) FROM work_editions;
 -- Expected: ~50–60 million rows
-```
 
----
-
-## Step 6 — Create the index needed for FK resolution
-
-Before running the UPDATE in Step 7, create an index on `quillent_work.ol_id`
-so the join does not perform a sequential scan across tens of millions of rows.
-
-```sql
-CREATE INDEX idx_quillent_work_ol_id ON quillent_work (ol_id);
-```
-
----
-
-## Step 7 — Resolve work_editions.work_id FK
-
-```sql
-UPDATE work_editions we
-SET    work_id = qw.id
-FROM   quillent_work qw
-WHERE  qw.ol_id = we.work_ol_id;
-```
-
-This may take several minutes on the full dataset. Run it inside a transaction
-if you want to be able to roll back:
-
-```sql
-BEGIN;
-UPDATE work_editions we
-SET    work_id = qw.id
-FROM   quillent_work qw
-WHERE  qw.ol_id = we.work_ol_id;
--- Check before committing:
-SELECT COUNT(*) FROM work_editions WHERE work_id = 0;
-COMMIT;
-```
-
-Check how many editions had no matching work (OL editions that reference a
-work key not present in the works dump — expected to be a small minority):
-
-```sql
+-- Check for unresolved work_id (should match transform script output)
 SELECT COUNT(*) FROM work_editions WHERE work_id = 0;
 ```
 
-Decide whether to delete or keep these orphan rows:
+If there are orphan editions (work_id=0), decide whether to keep or delete:
 
 ```sql
--- Option A: delete orphans
+-- Option A: delete orphans (FK constraint will reject them anyway)
 DELETE FROM work_editions WHERE work_id = 0;
 
--- Option B: keep them (requires relaxing the NOT NULL constraint temporarily
---            or accepting that work_id = 0 is a known sentinel)
+-- Option B: keep them for investigation
+-- (requires NOT NULL constraint to allow 0, or make work_id nullable)
 ```
 
 ---
 
-## Step 8 — Re-enable the FK constraint
-
-```sql
-ALTER TABLE work_editions
-    ENABLE TRIGGER ALL;
-
--- If you dropped the constraint in Step 2, recreate it:
---
--- ALTER TABLE work_editions
---     ADD CONSTRAINT fk_work_editions_work_id
---     FOREIGN KEY (work_id) REFERENCES quillent_work (id);
-```
-
-If using `session_replication_role`, nothing to do — it was per-session.
-
----
-
-## Step 9 — Rebuild all secondary indexes
+## Step 6 — Rebuild all secondary indexes
 
 Create indexes after the data is fully loaded. Building on a populated table
 uses a single sequential scan and is much faster than incremental updates.
@@ -242,7 +193,9 @@ CREATE INDEX idx_work_creator_ol_id
 CREATE INDEX idx_work_creator_creator_name
     ON work_creator (creator_name);
 
--- quillent_work (idx_quillent_work_ol_id already created in Step 6)
+-- quillent_work
+CREATE INDEX idx_quillent_work_ol_id
+    ON quillent_work (ol_id);
 CREATE INDEX idx_quillent_work_title
     ON quillent_work (title);
 CREATE INDEX idx_quillent_work_isbn_ten
@@ -275,7 +228,7 @@ CREATE INDEX idx_work_editions_publisher
 
 ---
 
-## Step 10 — Analyze
+## Step 7 — Analyze
 
 Update the query planner statistics now that the data and indexes are in place:
 
@@ -291,17 +244,19 @@ ANALYZE work_editions;
 
 | Step | Action |
 |------|--------|
-| 0 | Generate CSVs |
+| 0a | Parse dumps → CSV (authors, works, editions) |
+| 0b | Transform authors and works → DB-ready CSV |
 | 1 | Drop secondary indexes |
-| 2 | Disable work_editions FK / triggers |
-| 3 | COPY work_creator |
-| 4 | COPY quillent_work |
-| 5 | COPY work_editions (work_id = 0 sentinel) |
-| 6 | Create idx_quillent_work_ol_id |
-| 7 | UPDATE work_editions SET work_id (FK resolution) |
-| 8 | Re-enable FK constraint |
-| 9 | Rebuild all secondary indexes |
-| 10 | ANALYZE |
+| 2 | COPY work_creator |
+| 3 | COPY quillent_work |
+| 4 | Transform editions (queries DB for work_id mapping) |
+| 5 | COPY work_editions (work_id already resolved) |
+| 6 | Rebuild all secondary indexes |
+| 7 | ANALYZE |
+
+**Key difference from traditional workflows:** Editions are transformed AFTER
+works are loaded, eliminating the need for post-load UPDATE JOIN. This saves
+hours on large datasets.
 
 ---
 

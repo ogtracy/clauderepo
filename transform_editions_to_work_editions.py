@@ -5,47 +5,28 @@ Transform Open Library editions CSV to work_editions schema for PostgreSQL COPY.
 Reads from editions_csv/ (output of openlibrary_editions_to_csv.py) and writes
 DB-ready CSV files into work_editions_csv/ with work_id already resolved.
 
-PREREQUISITE: quillent_work table must already be loaded into PostgreSQL before
-running this script. This script queries the database to build a mapping of
+PREREQUISITE: quillent_work_csv/ must exist (output of transform_works_to_quillent_work.py).
+This script reads the quillent_work CSV files to build an in-memory mapping of
 ol_id → id, eliminating the need for post-load UPDATE JOIN.
 
 Usage:
-    python3 transform_editions_to_work_editions.py \\
-        --db <database> \\
-        [--host <host>] \\
-        [--port <port>] \\
-        [--user <user>] \\
-        [--test]
-
-    Environment variables (alternative to --user):
-        PGUSER, PGHOST, PGPORT, PGDATABASE
-
-Examples:
-    # Using command-line args
-    python3 transform_editions_to_work_editions.py --db mydb --user postgres
-
-    # Using environment variables
-    export PGDATABASE=mydb
-    export PGUSER=postgres
-    python3 transform_editions_to_work_editions.py
-
-    # Test mode (first file only)
-    python3 transform_editions_to_work_editions.py --db mydb --test
+    python3 transform_editions_to_work_editions.py           # all files
+    python3 transform_editions_to_work_editions.py --test    # first file only
 
 The script will:
-1. Connect to PostgreSQL and query: SELECT id, ol_id FROM quillent_work
+1. Read all quillent_work CSV files from quillent_work_csv/
 2. Build a mapping dictionary: {ol_id: id}
 3. Transform editions, setting work_id using the mapping
-4. Write work_id=0 for editions whose work is not in the database
+4. Write work_id=0 for editions whose work is not in the mapping
 """
 
 import csv
 import os
 import re
-import subprocess
 import sys
 
 INPUT_DIR = "editions_csv"
+WORKS_DIR = "quillent_work_csv"
 OUTPUT_DIR = "work_editions_csv"
 
 # Excluded from output: id (auto PK)
@@ -72,60 +53,42 @@ FIELDNAMES = [
 _YEAR_RE = re.compile(r"\b(1[0-9]{3}|20[0-2][0-9])\b")
 
 
-def load_work_id_mapping(db_config: dict) -> dict:
+def load_work_id_mapping(works_dir: str) -> dict:
     """
-    Query PostgreSQL for all works and return {ol_id: id} mapping.
+    Read all quillent_work CSV files and return {ol_id: id} mapping.
 
     Args:
-        db_config: Dict with keys: database, host, port, user
+        works_dir: Directory containing quillent_work_*.csv files
 
     Returns:
         Dictionary mapping work ol_id (e.g. "OL1W") to database id (int)
     """
-    # Build psql command
-    cmd = ["psql"]
-    if db_config.get("host"):
-        cmd.extend(["-h", db_config["host"]])
-    if db_config.get("port"):
-        cmd.extend(["-p", str(db_config["port"])])
-    if db_config.get("user"):
-        cmd.extend(["-U", db_config["user"]])
-    if db_config.get("database"):
-        cmd.extend(["-d", db_config["database"]])
-
-    # Query to fetch all work mappings
-    query = "COPY (SELECT id, ol_id FROM quillent_work WHERE ol_id IS NOT NULL) TO STDOUT WITH CSV"
-    cmd.extend(["-c", query, "-t", "-A"])
-
-    print("Querying PostgreSQL for work ID mappings...")
-    print(f"  Command: {' '.join(cmd[:4])} ...")
-
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: Failed to query database:", file=sys.stderr)
-        print(f"  {e.stderr}", file=sys.stderr)
-        sys.exit(1)
-    except FileNotFoundError:
-        print("ERROR: psql command not found. Please install PostgreSQL client.", file=sys.stderr)
+    if not os.path.isdir(works_dir):
+        print(f"ERROR: works directory '{works_dir}' does not exist.", file=sys.stderr)
+        print(f"Run transform_works_to_quillent_work.py first to generate it.", file=sys.stderr)
         sys.exit(1)
 
-    # Parse CSV output: id,ol_id
+    csv_files = sorted(f for f in os.listdir(works_dir) if f.endswith(".csv"))
+    if not csv_files:
+        print(f"ERROR: No CSV files found in {works_dir}/", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Reading quillent_work CSVs from {works_dir}/...")
     mapping = {}
-    for line in result.stdout.strip().split("\n"):
-        if not line:
-            continue
-        parts = line.split(",")
-        if len(parts) == 2:
-            work_id, ol_id = parts
-            mapping[ol_id] = int(work_id)
+    total_rows = 0
 
-    print(f"  Loaded {len(mapping):,} work ID mappings")
+    for fname in csv_files:
+        path = os.path.join(works_dir, fname)
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                work_id = row.get("id")
+                ol_id = row.get("ol_id")
+                if work_id and ol_id:
+                    mapping[ol_id] = int(work_id)
+                    total_rows += 1
+
+    print(f"  Loaded {len(mapping):,} work ID mappings from {len(csv_files)} CSV files")
     return mapping
 
 
@@ -286,65 +249,14 @@ def transform_files(input_dir: str, output_dir: str, work_mapping: dict, test_mo
     print(f"NO UPDATE JOIN NEEDED — work_id is already resolved!")
 
 
-def parse_args():
-    """Parse command-line arguments and environment variables."""
-    db_config = {
-        "database": os.environ.get("PGDATABASE"),
-        "host": os.environ.get("PGHOST", "localhost"),
-        "port": os.environ.get("PGPORT", "5432"),
-        "user": os.environ.get("PGUSER"),
-    }
-
-    test_mode = False
-    args = sys.argv[1:]
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        if arg == "--test":
-            test_mode = True
-            i += 1
-        elif arg == "--db" and i + 1 < len(args):
-            db_config["database"] = args[i + 1]
-            i += 2
-        elif arg == "--host" and i + 1 < len(args):
-            db_config["host"] = args[i + 1]
-            i += 2
-        elif arg == "--port" and i + 1 < len(args):
-            db_config["port"] = args[i + 1]
-            i += 2
-        elif arg == "--user" and i + 1 < len(args):
-            db_config["user"] = args[i + 1]
-            i += 2
-        elif arg in ("-h", "--help"):
-            print(__doc__)
-            sys.exit(0)
-        else:
-            print(f"ERROR: Unknown argument: {arg}", file=sys.stderr)
-            print("Use --help for usage information", file=sys.stderr)
-            sys.exit(1)
-
-    # Validate required config
-    if not db_config["database"]:
-        print("ERROR: Database name required. Use --db <database> or set PGDATABASE", file=sys.stderr)
-        sys.exit(1)
-
-    return db_config, test_mode
-
-
 def main():
-    db_config, test_mode = parse_args()
-
+    test_mode = "--test" in sys.argv
     print("=" * 80)
     print("Transform editions CSV -> work_editions CSV (with work_id pre-resolved)")
     print("=" * 80)
-    print(f"Database: {db_config['database']}")
-    print(f"Host:     {db_config['host']}")
-    print(f"Port:     {db_config['port']}")
-    print(f"User:     {db_config['user'] or '(default)'}")
-    print()
 
-    # Load work ID mapping from database
-    work_mapping = load_work_id_mapping(db_config)
+    # Load work ID mapping from quillent_work CSVs
+    work_mapping = load_work_id_mapping(WORKS_DIR)
     print()
 
     # Transform files

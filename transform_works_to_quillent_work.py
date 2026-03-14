@@ -51,8 +51,9 @@ INPUT_DIR = "works_csv"
 OUTPUT_DIR = "quillent_work_csv"
 MAX_DESCRIPTION = 5000  # choose your limit
 
-# Excluded from output: id (auto PK)
+# Include id in output (pre-assigned, starts at 1)
 FIELDNAMES = [
+    "id",
     "uuid",
     "title",
     "sub_title",
@@ -147,7 +148,17 @@ def covers_as_json(covers_str: str) -> str:
     return json.dumps(ids) if ids else ""
 
 
-def transform_row(row: dict) -> dict:
+def transform_row(row: dict, work_id: int) -> dict:
+    """
+    Transform a single work row from generic CSV to DB schema.
+
+    Args:
+        row: Dictionary from csv.DictReader
+        work_id: Pre-assigned integer ID for this work
+
+    Returns:
+        Dictionary ready for csv.DictWriter with id included
+    """
     key = row.get("key", "").strip('"')
     date_str = row.get("first_publish_date", "")
     covers_str = row.get("covers", "")
@@ -160,6 +171,7 @@ def transform_row(row: dict) -> dict:
         desc = desc[:MAX_DESCRIPTION]
 
     return {
+        "id":                     work_id,
         "uuid":                   key,
         "title":                  row.get("title", ""),
         "sub_title":              row.get("subtitle", ""),
@@ -203,6 +215,7 @@ def transform_files(input_dir: str, output_dir: str, test_mode: bool = False):
     os.makedirs(output_dir, exist_ok=True)
 
     total_written = 0
+    current_id = 1  # Pre-assign IDs starting from 1
     for fname in csv_files:
         in_path = os.path.join(input_dir, fname)
         out_name = fname.replace("works_", "quillent_work_")
@@ -221,18 +234,23 @@ def transform_files(input_dir: str, output_dir: str, test_mode: bool = False):
             )
             writer.writeheader()
             for row in reader:
-                writer.writerow(transform_row(row))
+                writer.writerow(transform_row(row, current_id))
+                current_id += 1
                 written += 1
 
         total_written += written
-        print(f"  {fname} -> {out_name}  ({written:,} rows)")
+        print(f"  {fname} -> {out_name}  ({written:,} rows, IDs {current_id - written} to {current_id - 1})")
 
     col_list = ",".join(FIELDNAMES)
     print(f"\nDone. {total_written:,} rows written to {output_dir}/")
-    print(f"\nTo load into PostgreSQL (id is auto-generated, omit it):")
+    print(f"  IDs assigned: 1 to {current_id - 1}")
+    print(f"\nTo load into PostgreSQL (id is pre-assigned in CSV):")
     print(f"  \\copy quillent_work ({col_list})")
     print(f"    FROM '<absolute_path>/{output_dir}/quillent_work_0001.csv'")
     print(f"    CSV HEADER;")
+    print()
+    print(f"After loading, reset the sequence:")
+    print(f"  SELECT setval('quillent_work_id_seq', (SELECT MAX(id) FROM quillent_work));")
     print()
     print(f"Or for all files at once (bash):")
     print(f"  for f in {output_dir}/quillent_work_*.csv; do")

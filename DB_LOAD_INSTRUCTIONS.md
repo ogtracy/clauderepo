@@ -7,21 +7,20 @@ into the three target tables.
 
 ```
 work_creator          (no FK dependencies)
-quillent_work         (no FK dependencies)
+quillent_work         (no FK dependencies, IDs pre-assigned in CSV)
 work_editions         (work_id FK → quillent_work.id — resolved during transform)
 ```
 
-**IMPORTANT:** Editions are transformed AFTER works are loaded. The editions
-transform script queries the database to resolve work_id during transformation,
-eliminating the need for post-load UPDATE JOIN.
+**IMPORTANT:** IDs are pre-assigned in the quillent_work CSV. Editions are
+transformed after works transform completes. The editions transform reads the
+quillent_work CSVs to resolve work_id, eliminating the need for database queries
+or post-load UPDATE JOIN.
 
 ---
 
 ## Step 0 — Generate the CSV files
 
-### Phase 1: Parse dumps and transform authors/works
-
-Run the three parser scripts in parallel (they are independent):
+Run all three parser scripts in parallel (they are independent):
 
 ```bash
 # Each takes several hours on the full dump; --test flag for a quick trial
@@ -31,22 +30,17 @@ python3 openlibrary_editions_to_csv.py > parse_editions.log 2>&1 &
 wait
 ```
 
-Then transform authors and works (editions come later):
+Then transform authors and works in parallel, followed by editions:
 
 ```bash
-python3 transform_authors_to_work_creator.py  # → work_creator_csv/
-python3 transform_works_to_quillent_work.py   # → quillent_work_csv/
-```
+# Transform authors and works (run in parallel)
+python3 transform_authors_to_work_creator.py > transform_authors.log 2>&1 &
+python3 transform_works_to_quillent_work.py  > transform_works.log   2>&1 &
+wait
 
-### Phase 2: Transform editions (after loading works)
-
-The editions transform script requires works to be loaded first:
-
-```bash
-# Run AFTER Step 4 (loading quillent_work)
-python3 transform_editions_to_work_editions.py --db <database> \
-    [--host <host>] [--port <port>] [--user <user>]
-# → work_editions_csv/ with work_id already resolved
+# Transform editions (requires quillent_work CSVs)
+python3 transform_editions_to_work_editions.py > transform_editions.log 2>&1
+# → work_creator_csv/, quillent_work_csv/, work_editions_csv/
 ```
 
 ---
@@ -102,13 +96,12 @@ SELECT COUNT(*) FROM work_creator;
 
 ## Step 3 — Load quillent_work
 
-No FK dependencies. Load second (must precede work_editions transform so the
-editions transform script can query for work_id mappings).
+No FK dependencies. Load second. **IMPORTANT:** The CSV includes pre-assigned `id` values.
 
 ```bash
 for f in quillent_work_csv/quillent_work_*.csv; do
     psql -d <db> -c "\copy quillent_work \
-        (uuid, title, sub_title, description, first_publication_date, \
+        (id, uuid, title, sub_title, description, first_publication_date, \
          publication_date_epoch, isbn_ten, isbn_thirteen, language_code, \
          num_of_pages, ol_id, cover_id, featured_edition, \
          featured_edition_id, featured_edition_fk, series, \
@@ -122,26 +115,20 @@ Verify:
 ```sql
 SELECT COUNT(*) FROM quillent_work;
 -- Expected: ~30–35 million rows
+SELECT MIN(id), MAX(id) FROM quillent_work;
+-- Should be sequential: 1 to ~30-35 million
 ```
 
 ---
 
-## Step 4 — Transform editions (with work_id resolution)
+## Step 4 — Reset quillent_work sequence
 
-**NOW** run the editions transform script, which queries the database to resolve
-work_id during transformation:
+Since we provided explicit `id` values, PostgreSQL's auto-increment sequence
+is not updated. Reset it so future INSERTs work correctly:
 
-```bash
-python3 transform_editions_to_work_editions.py --db <database> \
-    [--host <host>] [--port <port>] [--user <user>]
-# → work_editions_csv/ with work_id already resolved
+```sql
+SELECT setval('quillent_work_id_seq', (SELECT MAX(id) FROM quillent_work));
 ```
-
-The script will:
-1. Query `SELECT id, ol_id FROM quillent_work` to build an in-memory mapping
-2. Transform each edition, setting `work_id` from the mapping
-3. Write `work_id=0` for editions whose work is not in the database
-4. Report how many editions have unresolved work_id
 
 ---
 
@@ -245,18 +232,18 @@ ANALYZE work_editions;
 | Step | Action |
 |------|--------|
 | 0a | Parse dumps → CSV (authors, works, editions) |
-| 0b | Transform authors and works → DB-ready CSV |
+| 0b | Transform authors, works, editions → DB-ready CSV (with pre-assigned IDs) |
 | 1 | Drop secondary indexes |
 | 2 | COPY work_creator |
-| 3 | COPY quillent_work |
-| 4 | Transform editions (queries DB for work_id mapping) |
+| 3 | COPY quillent_work (with pre-assigned id column) |
+| 4 | Reset quillent_work_id_seq |
 | 5 | COPY work_editions (work_id already resolved) |
 | 6 | Rebuild all secondary indexes |
 | 7 | ANALYZE |
 
-**Key difference from traditional workflows:** Editions are transformed AFTER
-works are loaded, eliminating the need for post-load UPDATE JOIN. This saves
-hours on large datasets.
+**Key difference from traditional workflows:** IDs are pre-assigned in the CSV and
+editions reference works by these pre-assigned IDs. Pure CSV-based workflow with no
+database queries or post-load UPDATE JOIN. This saves hours on large datasets.
 
 ---
 

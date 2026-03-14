@@ -3,47 +3,46 @@
 Transform Open Library editions CSV to work_editions schema for PostgreSQL COPY.
 
 Reads from editions_csv/ (output of openlibrary_editions_to_csv.py) and writes
-DB-ready CSV files into work_editions_csv/ matching:
+DB-ready CSV files into work_editions_csv/ with work_id already resolved.
 
-    work_editions (
-        -- id BIGINT (PK, auto)   -- excluded; DB generates this
-        uuid             VARCHAR   -- OL edition key e.g. /books/OL1M
-        work_id          BIGINT    -- FK → quillent_work.id; set to 0 sentinel,
-                                   -- must be resolved post-load (see below)
-        isbn_ten         VARCHAR
-        isbn_thirteen    VARCHAR
-        publication_date VARCHAR
-        publication_year VARCHAR
-        ol_id            VARCHAR   -- bare OL ID e.g. OL1M
-        work_ol_id       VARCHAR   -- bare OL work ID e.g. OL1W (denormalized)
-        number_of_pages  VARCHAR
-        lccn             VARCHAR
-        oclc_number      VARCHAR
-        publisher        VARCHAR   -- first publisher only
-        series           VARCHAR   -- not in OL editions data
-        goodreads_id     VARCHAR   -- not in OL editions data
-        google_id        VARCHAR   -- not in OL editions data
-        asin             VARCHAR   -- not in OL editions data
-        is_featured      BOOLEAN   -- false (set per-work after load)
-    )
-
-Post-load SQL to resolve work_id FK:
-    UPDATE work_editions we
-    SET    work_id = qw.id
-    FROM   quillent_work qw
-    WHERE  qw.ol_id = we.work_ol_id;
-
-    -- Optionally verify no unresolved rows remain:
-    SELECT COUNT(*) FROM work_editions WHERE work_id = 0;
+PREREQUISITE: quillent_work table must already be loaded into PostgreSQL before
+running this script. This script queries the database to build a mapping of
+ol_id → id, eliminating the need for post-load UPDATE JOIN.
 
 Usage:
-    python3 transform_editions_to_work_editions.py           # all files
-    python3 transform_editions_to_work_editions.py --test    # first file only
+    python3 transform_editions_to_work_editions.py \\
+        --db <database> \\
+        [--host <host>] \\
+        [--port <port>] \\
+        [--user <user>] \\
+        [--test]
+
+    Environment variables (alternative to --user):
+        PGUSER, PGHOST, PGPORT, PGDATABASE
+
+Examples:
+    # Using command-line args
+    python3 transform_editions_to_work_editions.py --db mydb --user postgres
+
+    # Using environment variables
+    export PGDATABASE=mydb
+    export PGUSER=postgres
+    python3 transform_editions_to_work_editions.py
+
+    # Test mode (first file only)
+    python3 transform_editions_to_work_editions.py --db mydb --test
+
+The script will:
+1. Connect to PostgreSQL and query: SELECT id, ol_id FROM quillent_work
+2. Build a mapping dictionary: {ol_id: id}
+3. Transform editions, setting work_id using the mapping
+4. Write work_id=0 for editions whose work is not in the database
 """
 
 import csv
 import os
 import re
+import subprocess
 import sys
 
 INPUT_DIR = "editions_csv"
@@ -73,6 +72,63 @@ FIELDNAMES = [
 _YEAR_RE = re.compile(r"\b(1[0-9]{3}|20[0-2][0-9])\b")
 
 
+def load_work_id_mapping(db_config: dict) -> dict:
+    """
+    Query PostgreSQL for all works and return {ol_id: id} mapping.
+
+    Args:
+        db_config: Dict with keys: database, host, port, user
+
+    Returns:
+        Dictionary mapping work ol_id (e.g. "OL1W") to database id (int)
+    """
+    # Build psql command
+    cmd = ["psql"]
+    if db_config.get("host"):
+        cmd.extend(["-h", db_config["host"]])
+    if db_config.get("port"):
+        cmd.extend(["-p", str(db_config["port"])])
+    if db_config.get("user"):
+        cmd.extend(["-U", db_config["user"]])
+    if db_config.get("database"):
+        cmd.extend(["-d", db_config["database"]])
+
+    # Query to fetch all work mappings
+    query = "COPY (SELECT id, ol_id FROM quillent_work WHERE ol_id IS NOT NULL) TO STDOUT WITH CSV"
+    cmd.extend(["-c", query, "-t", "-A"])
+
+    print("Querying PostgreSQL for work ID mappings...")
+    print(f"  Command: {' '.join(cmd[:4])} ...")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: Failed to query database:", file=sys.stderr)
+        print(f"  {e.stderr}", file=sys.stderr)
+        sys.exit(1)
+    except FileNotFoundError:
+        print("ERROR: psql command not found. Please install PostgreSQL client.", file=sys.stderr)
+        sys.exit(1)
+
+    # Parse CSV output: id,ol_id
+    mapping = {}
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split(",")
+        if len(parts) == 2:
+            work_id, ol_id = parts
+            mapping[ol_id] = int(work_id)
+
+    print(f"  Loaded {len(mapping):,} work ID mappings")
+    return mapping
+
+
 def extract_year(date_str: str) -> str:
     """Pull first 4-digit year out of any date string, or return ''."""
     if not date_str:
@@ -93,13 +149,26 @@ def first_value(comma_or_semi_str: str, sep: str = ",") -> str:
     return comma_or_semi_str.split(sep)[0].strip()
 
 
-def transform_row(row: dict) -> dict:
+def transform_row(row: dict, work_mapping: dict) -> dict:
+    """
+    Transform a single edition row from generic CSV to DB schema.
+
+    Args:
+        row: Dictionary from csv.DictReader
+        work_mapping: Dictionary {work_ol_id: work_id} from database
+
+    Returns:
+        Dictionary ready for csv.DictWriter with work_id resolved
+    """
     key = row.get("key", "").strip('"')
 
     # works field is comma-separated work keys; take the first
     works_str = row.get("works", "")
     first_work_key = first_value(works_str, ",")
     work_ol_id = ol_key_to_id(first_work_key) if first_work_key else ""
+
+    # Resolve work_id from mapping (0 if not found)
+    work_id = work_mapping.get(work_ol_id, 0)
 
     pub_date = row.get("publish_date", "")
 
@@ -120,7 +189,7 @@ def transform_row(row: dict) -> dict:
 
     return {
         "uuid":             key,
-        "work_id":          0,          # sentinel — resolve via post-load UPDATE
+        "work_id":          work_id,    # resolved from database mapping
         "isbn_ten":         isbn_ten,
         "isbn_thirteen":    isbn_thirteen,
         "publication_date": pub_date,
@@ -139,7 +208,16 @@ def transform_row(row: dict) -> dict:
     }
 
 
-def transform_files(input_dir: str, output_dir: str, test_mode: bool = False):
+def transform_files(input_dir: str, output_dir: str, work_mapping: dict, test_mode: bool = False):
+    """
+    Transform all CSV files from input_dir to output_dir.
+
+    Args:
+        input_dir: Directory containing editions_*.csv files
+        output_dir: Directory to write work_editions_*.csv files
+        work_mapping: Dictionary {work_ol_id: work_id} from database
+        test_mode: If True, only process first file
+    """
     if not os.path.isdir(input_dir):
         print(f"ERROR: input directory '{input_dir}' does not exist.")
         print(f"Run openlibrary_editions_to_csv.py first to generate it.")
@@ -157,12 +235,14 @@ def transform_files(input_dir: str, output_dir: str, test_mode: bool = False):
     os.makedirs(output_dir, exist_ok=True)
 
     total_written = 0
+    unresolved_count = 0
     for fname in csv_files:
         in_path = os.path.join(input_dir, fname)
         out_name = fname.replace("editions_", "work_editions_")
         out_path = os.path.join(output_dir, out_name)
 
         written = 0
+        file_unresolved = 0
         with open(in_path, "r", encoding="utf-8", newline="") as f_in, \
              open(out_path, "w", encoding="utf-8", newline="") as f_out:
 
@@ -175,15 +255,25 @@ def transform_files(input_dir: str, output_dir: str, test_mode: bool = False):
             )
             writer.writeheader()
             for row in reader:
-                writer.writerow(transform_row(row))
+                transformed = transform_row(row, work_mapping)
+                if transformed["work_id"] == 0:
+                    file_unresolved += 1
+                writer.writerow(transformed)
                 written += 1
 
         total_written += written
-        print(f"  {fname} -> {out_name}  ({written:,} rows)")
+        unresolved_count += file_unresolved
+        print(f"  {fname} -> {out_name}  ({written:,} rows, {file_unresolved:,} unresolved)")
 
     col_list = ",".join(FIELDNAMES)
     print(f"\nDone. {total_written:,} rows written to {output_dir}/")
-    print(f"\nStep 1 — load CSV (id is auto-generated, work_id starts as 0 sentinel):")
+    print(f"  {unresolved_count:,} editions have work_id=0 (work not found in database)")
+    if unresolved_count > 0:
+        print(f"\n  NOTE: Editions with work_id=0 reference works that don't exist in quillent_work.")
+        print(f"        You can either:")
+        print(f"        1. Delete them: DELETE FROM work_editions WHERE work_id = 0;")
+        print(f"        2. Keep them as orphans (FK constraint will reject them)")
+    print(f"\nTo load into PostgreSQL:")
     print(f"  \\copy work_editions ({col_list})")
     print(f"    FROM '<absolute_path>/{output_dir}/work_editions_0001.csv'")
     print(f"    CSV HEADER;")
@@ -193,22 +283,72 @@ def transform_files(input_dir: str, output_dir: str, test_mode: bool = False):
     print(f"    psql -d <db> -c \"\\copy work_editions ({col_list}) FROM '\\$f' CSV HEADER;\"")
     print(f"  done")
     print()
-    print(f"Step 2 — resolve work_id FK after both tables are loaded:")
-    print(f"  UPDATE work_editions we")
-    print(f"  SET    work_id = qw.id")
-    print(f"  FROM   quillent_work qw")
-    print(f"  WHERE  qw.ol_id = we.work_ol_id;")
-    print()
-    print(f"Step 3 — verify no unresolved rows:")
-    print(f"  SELECT COUNT(*) FROM work_editions WHERE work_id = 0;")
+    print(f"NO UPDATE JOIN NEEDED — work_id is already resolved!")
+
+
+def parse_args():
+    """Parse command-line arguments and environment variables."""
+    db_config = {
+        "database": os.environ.get("PGDATABASE"),
+        "host": os.environ.get("PGHOST", "localhost"),
+        "port": os.environ.get("PGPORT", "5432"),
+        "user": os.environ.get("PGUSER"),
+    }
+
+    test_mode = False
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--test":
+            test_mode = True
+            i += 1
+        elif arg == "--db" and i + 1 < len(args):
+            db_config["database"] = args[i + 1]
+            i += 2
+        elif arg == "--host" and i + 1 < len(args):
+            db_config["host"] = args[i + 1]
+            i += 2
+        elif arg == "--port" and i + 1 < len(args):
+            db_config["port"] = args[i + 1]
+            i += 2
+        elif arg == "--user" and i + 1 < len(args):
+            db_config["user"] = args[i + 1]
+            i += 2
+        elif arg in ("-h", "--help"):
+            print(__doc__)
+            sys.exit(0)
+        else:
+            print(f"ERROR: Unknown argument: {arg}", file=sys.stderr)
+            print("Use --help for usage information", file=sys.stderr)
+            sys.exit(1)
+
+    # Validate required config
+    if not db_config["database"]:
+        print("ERROR: Database name required. Use --db <database> or set PGDATABASE", file=sys.stderr)
+        sys.exit(1)
+
+    return db_config, test_mode
 
 
 def main():
-    test_mode = "--test" in sys.argv
-    print("=" * 60)
-    print("Transform editions CSV -> work_editions CSV")
-    print("=" * 60)
-    transform_files(INPUT_DIR, OUTPUT_DIR, test_mode)
+    db_config, test_mode = parse_args()
+
+    print("=" * 80)
+    print("Transform editions CSV -> work_editions CSV (with work_id pre-resolved)")
+    print("=" * 80)
+    print(f"Database: {db_config['database']}")
+    print(f"Host:     {db_config['host']}")
+    print(f"Port:     {db_config['port']}")
+    print(f"User:     {db_config['user'] or '(default)'}")
+    print()
+
+    # Load work ID mapping from database
+    work_mapping = load_work_id_mapping(db_config)
+    print()
+
+    # Transform files
+    transform_files(INPUT_DIR, OUTPUT_DIR, work_mapping, test_mode)
 
 
 if __name__ == "__main__":

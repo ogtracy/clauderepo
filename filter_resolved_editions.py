@@ -7,11 +7,12 @@ Removes editions that couldn't be matched to a work in the database.
 import csv
 import sys
 from pathlib import Path
+from typing import Tuple
 
 INPUT_DIR = "work_editions_csv"
 OUTPUT_DIR = "work_editions_resolved_csv"
 
-def filter_csv(input_path: Path, output_path: Path) -> tuple[int, int]:
+def filter_csv(input_path: Path, output_path: Path) -> Tuple[int, int]:
     """
     Filter a single CSV file, keeping only rows with work_id != 0.
     Returns (total_rows, kept_rows).

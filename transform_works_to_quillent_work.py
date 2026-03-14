@@ -50,7 +50,8 @@ csv.field_size_limit(10_000_000)
 INPUT_DIR = "works_csv"
 OUTPUT_DIR = "quillent_work_csv"
 SUBJECTS_OUTPUT = "work_subjects.csv"  # Intermediate file for tag processing
-MAX_DESCRIPTION = 5000  # choose your limit
+MAX_DESCRIPTION = 5000
+MAX_TITLE_LENGTH = 1000
 
 # Include id in output (pre-assigned, starts at 1)
 FIELDNAMES = [
@@ -167,15 +168,25 @@ def transform_row(row: dict, work_id: int) -> dict:
     # For integer columns, use None instead of "" for proper NULL in CSV
     epoch_day = parse_epoch_day(date_str)
     cover_id_str = first_cover_id(covers_str)
+
+    # Truncate long fields
     desc = row.get("description", "")
     if desc and len(desc) > MAX_DESCRIPTION:
         desc = desc[:MAX_DESCRIPTION]
 
+    title = row.get("title", "")
+    if title and len(title) > MAX_TITLE_LENGTH:
+        title = title[:MAX_TITLE_LENGTH]
+
+    sub_title = row.get("subtitle", "")
+    if sub_title and len(sub_title) > MAX_TITLE_LENGTH:
+        sub_title = sub_title[:MAX_TITLE_LENGTH]
+
     return {
         "id":                     work_id,
         "uuid":                   key,
-        "title":                  row.get("title", ""),
-        "sub_title":              row.get("subtitle", ""),
+        "title":                  title,
+        "sub_title":              sub_title,
         "description":            desc,
         "first_publication_date": date_str,
         "publication_date_epoch": epoch_day if epoch_day is not None else None,

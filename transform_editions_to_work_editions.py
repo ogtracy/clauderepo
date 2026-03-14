@@ -29,6 +29,10 @@ INPUT_DIR = "editions_csv"
 WORKS_DIR = "quillent_work_csv"
 OUTPUT_DIR = "work_editions_csv"
 
+# Maximum field lengths
+MAX_PUBLISHER_LENGTH = 1000
+MAX_DATE_LENGTH = 1000
+
 # Excluded from output: id (auto PK)
 FIELDNAMES = [
     "uuid",
@@ -145,6 +149,13 @@ def transform_row(row: dict, work_mapping: dict) -> dict:
     # lccn and oclc are comma-separated; take the first
     lccn = first_value(row.get("lccn", ""), ",")
     oclc = first_value(row.get("oclc_numbers", ""), ",")
+
+    # Truncate long fields
+    if pub_date and len(pub_date) > MAX_DATE_LENGTH:
+        pub_date = pub_date[:MAX_DATE_LENGTH]
+
+    if publisher and len(publisher) > MAX_PUBLISHER_LENGTH:
+        publisher = publisher[:MAX_PUBLISHER_LENGTH]
 
     # For integer columns, use None instead of "" for proper NULL in CSV
     year_str = extract_year(pub_date)

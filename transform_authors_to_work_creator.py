@@ -29,6 +29,9 @@ OUTPUT_DIR = "work_creator_csv"
 # Exact column order for PostgreSQL COPY
 FIELDNAMES = ["uuid", "creator_name", "personal_name", "birth_date", "death_date", "ol_id"]
 
+# Maximum field lengths
+MAX_NAME_LENGTH = 1000
+
 
 def ol_key_to_id(key: str) -> str:
     """Extract bare OL ID from a full key.  '/authors/OL1A' -> 'OL1A'"""
@@ -37,10 +40,20 @@ def ol_key_to_id(key: str) -> str:
 
 def transform_row(row: dict) -> dict:
     key = row.get("key", "").strip('"')
+
+    # Truncate long names
+    creator_name = row.get("name", "")
+    if creator_name and len(creator_name) > MAX_NAME_LENGTH:
+        creator_name = creator_name[:MAX_NAME_LENGTH]
+
+    personal_name = row.get("personal_name", "")
+    if personal_name and len(personal_name) > MAX_NAME_LENGTH:
+        personal_name = personal_name[:MAX_NAME_LENGTH]
+
     return {
         "uuid":          key,
-        "creator_name":  row.get("name", ""),
-        "personal_name": row.get("personal_name", ""),
+        "creator_name":  creator_name,
+        "personal_name": personal_name,
         "birth_date":    row.get("birth_date", ""),
         "death_date":    row.get("death_date", ""),
         "ol_id":         ol_key_to_id(key) if key else "",

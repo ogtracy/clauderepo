@@ -49,6 +49,7 @@ csv.field_size_limit(10_000_000)
 
 INPUT_DIR = "works_csv"
 OUTPUT_DIR = "quillent_work_csv"
+SUBJECTS_OUTPUT = "work_subjects.csv"  # Intermediate file for tag processing
 MAX_DESCRIPTION = 5000  # choose your limit
 
 # Include id in output (pre-assigned, starts at 1)
@@ -216,35 +217,52 @@ def transform_files(input_dir: str, output_dir: str, test_mode: bool = False):
 
     total_written = 0
     current_id = 1  # Pre-assign IDs starting from 1
-    for fname in csv_files:
-        in_path = os.path.join(input_dir, fname)
-        out_name = fname.replace("works_", "quillent_work_")
-        out_path = os.path.join(output_dir, out_name)
 
-        written = 0
-        with open(in_path, "r", encoding="utf-8", newline="") as f_in, \
-             open(out_path, "w", encoding="utf-8", newline="") as f_out:
+    # Open subjects file for writing (append mode across all input files)
+    subjects_path = os.path.join(output_dir, SUBJECTS_OUTPUT)
+    with open(subjects_path, "w", encoding="utf-8", newline="") as f_subjects:
+        subjects_writer = csv.writer(f_subjects, quoting=csv.QUOTE_MINIMAL)
+        subjects_writer.writerow(["work_id", "subjects"])  # Header
 
-            reader = csv.DictReader(f_in)
-            writer = csv.DictWriter(
-                f_out,
-                fieldnames=FIELDNAMES,
-                quoting=csv.QUOTE_MINIMAL,
-                extrasaction="ignore",
-            )
-            writer.writeheader()
-            for row in reader:
-                writer.writerow(transform_row(row, current_id))
-                current_id += 1
-                written += 1
+        for fname in csv_files:
+            in_path = os.path.join(input_dir, fname)
+            out_name = fname.replace("works_", "quillent_work_")
+            out_path = os.path.join(output_dir, out_name)
 
-        total_written += written
-        print(f"  {fname} -> {out_name}  ({written:,} rows, IDs {current_id - written} to {current_id - 1})")
+            written = 0
+            with open(in_path, "r", encoding="utf-8", newline="") as f_in, \
+                 open(out_path, "w", encoding="utf-8", newline="") as f_out:
+
+                reader = csv.DictReader(f_in)
+                writer = csv.DictWriter(
+                    f_out,
+                    fieldnames=FIELDNAMES,
+                    quoting=csv.QUOTE_MINIMAL,
+                    extrasaction="ignore",
+                )
+                writer.writeheader()
+                for row in reader:
+                    writer.writerow(transform_row(row, current_id))
+
+                    # Write subjects to intermediate file
+                    subjects = row.get("subjects", "")
+                    if subjects:  # Only write if subjects exist
+                        subjects_writer.writerow([current_id, subjects])
+
+                    current_id += 1
+                    written += 1
+
+            total_written += written
+            print(f"  {fname} -> {out_name}  ({written:,} rows, IDs {current_id - written} to {current_id - 1})")
 
     col_list = ",".join(FIELDNAMES)
     print(f"\nDone. {total_written:,} rows written to {output_dir}/")
     print(f"  IDs assigned: 1 to {current_id - 1}")
-    print(f"\nTo load into PostgreSQL (id is pre-assigned in CSV):")
+    print(f"  Subjects written to: {subjects_path}")
+    print(f"\nNext step — process tags:")
+    print(f"  python3 process_tags.py")
+    print()
+    print(f"To load into PostgreSQL (id is pre-assigned in CSV):")
     print(f"  \\copy quillent_work ({col_list})")
     print(f"    FROM '<absolute_path>/{output_dir}/quillent_work_0001.csv'")
     print(f"    CSV HEADER;")

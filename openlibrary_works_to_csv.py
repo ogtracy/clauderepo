@@ -121,13 +121,13 @@ def parse_work_record(line: str) -> Optional[Dict[str, Any]]:
             'last_modified': last_modified,
             'title': work_data.get('title', ''),
             'subtitle': work_data.get('subtitle', ''),
-            'authors': '',
-            'subjects': '',
-            'subject_places': '',
-            'subject_times': '',
+            'authors': '[]',
+            'subjects': '[]',
+            'subject_places': '[]',
+            'subject_times': '[]',
             'description': '',
             'first_publish_date': work_data.get('first_publish_date', ''),
-            'covers': '',
+            'covers': '[]',
             'number_of_editions': '',
         }
 
@@ -142,23 +142,36 @@ def parse_work_record(line: str) -> Optional[Dict[str, Any]]:
                         author_keys.append(author_key.get('key', ''))
                     elif isinstance(author_key, str):
                         author_keys.append(author_key)
-            result['authors'] = ', '.join(filter(None, author_keys))
+            result['authors'] = json.dumps(
+                list(filter(None, author_keys)), ensure_ascii=False, separators=(',', ':')
+            )
 
         # Handle subjects (list of strings)
         subjects = work_data.get('subjects', [])
         if subjects and isinstance(subjects, list):
-            # Join subjects with semicolon to avoid comma confusion
-            result['subjects'] = '; '.join(subjects[:20])  # Limit to first 20
+            result['subjects'] = json.dumps(
+                [subject for subject in subjects if isinstance(subject, str)],
+                ensure_ascii=False,
+                separators=(',', ':'),
+            )
 
         # Handle subject_places
         subject_places = work_data.get('subject_places', [])
         if subject_places and isinstance(subject_places, list):
-            result['subject_places'] = '; '.join(subject_places[:10])
+            result['subject_places'] = json.dumps(
+                [place for place in subject_places if isinstance(place, str)],
+                ensure_ascii=False,
+                separators=(',', ':'),
+            )
 
         # Handle subject_times
         subject_times = work_data.get('subject_times', [])
         if subject_times and isinstance(subject_times, list):
-            result['subject_times'] = '; '.join(subject_times[:10])
+            result['subject_times'] = json.dumps(
+                [period for period in subject_times if isinstance(period, str)],
+                ensure_ascii=False,
+                separators=(',', ':'),
+            )
 
         # Handle description (can be a string or dict)
         # Handle description (can be a string or dict)
@@ -171,8 +184,10 @@ def parse_work_record(line: str) -> Optional[Dict[str, Any]]:
         # Handle covers (list of cover IDs)
         covers = work_data.get('covers', [])
         if covers and isinstance(covers, list):
-            # Convert to strings and join
-            result['covers'] = ', '.join(str(c) for c in covers[:5])  # Limit to first 5
+            result['covers'] = json.dumps(
+                [c for c in covers if isinstance(c, int) and c != -1],
+                separators=(',', ':'),
+            )
 
         # Handle number of editions
         if 'number_of_editions' in work_data:

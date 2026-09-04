@@ -23,8 +23,12 @@ import csv
 import os
 import sys
 
+from collection_fields import string_values
+
 INPUT_DIR = "authors_csv"
 OUTPUT_DIR = "work_creator_csv"
+ALTERNATE_NAMES_FILE = "author_alternate_names.csv"
+EXTERNAL_LINKS_FILE = "author_external_links.csv"
 
 # Exact column order for PostgreSQL COPY
 FIELDNAMES = ["uuid", "creator_name", "personal_name", "birth_date", "death_date", "ol_id"]
@@ -78,7 +82,16 @@ def transform_files(input_dir: str, output_dir: str, test_mode: bool = False):
     os.makedirs(output_dir, exist_ok=True)
 
     total_written = 0
-    for fname in csv_files:
+    alternate_names_path = os.path.join(output_dir, ALTERNATE_NAMES_FILE)
+    external_links_path = os.path.join(output_dir, EXTERNAL_LINKS_FILE)
+    with open(alternate_names_path, "w", encoding="utf-8", newline="") as alternate_file, \
+         open(external_links_path, "w", encoding="utf-8", newline="") as links_file:
+      alternate_writer = csv.writer(alternate_file, quoting=csv.QUOTE_MINIMAL)
+      links_writer = csv.writer(links_file, quoting=csv.QUOTE_MINIMAL)
+      alternate_writer.writerow(["author_external_id", "alternate_name", "position"])
+      links_writer.writerow(["author_external_id", "link_type", "url"])
+
+      for fname in csv_files:
         in_path = os.path.join(input_dir, fname)
         # Rename: authors_0001.csv -> work_creator_0001.csv
         out_name = fname.replace("authors_", "work_creator_")
@@ -97,13 +110,25 @@ def transform_files(input_dir: str, output_dir: str, test_mode: bool = False):
             )
             writer.writeheader()
             for row in reader:
-                writer.writerow(transform_row(row))
+                transformed = transform_row(row)
+                writer.writerow(transformed)
                 written += 1
+
+                author_key = transformed["uuid"]
+                for position, alternate_name in enumerate(
+                        string_values(row.get("alternate_names", "[]")), start=1):
+                    alternate_writer.writerow([author_key, alternate_name, position])
+                for link_type in ("wikipedia", "website"):
+                    url = row.get(link_type, "").strip()
+                    if url:
+                        links_writer.writerow([author_key, link_type, url])
 
         total_written += written
         print(f"  {fname} -> {out_name}  ({written:,} rows)")
 
     print(f"\nDone. {total_written:,} rows written to {output_dir}/")
+    print(f"  Alternate names written to: {alternate_names_path}")
+    print(f"  External links written to: {external_links_path}")
     print(f"\nTo load into PostgreSQL:")
     print(f"  \\copy work_creator (uuid,creator_name,personal_name,birth_date,death_date,ol_id)")
     print(f"    FROM '<absolute_path>/{output_dir}/work_creator_0001.csv'")

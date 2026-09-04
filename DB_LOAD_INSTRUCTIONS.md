@@ -1,5 +1,9 @@
 # Open Library → PostgreSQL Load Instructions
 
+> **Legacy direct-load path.** This does not merge duplicates or build author
+> profiles. For the replacement canonical database, use
+> `CANONICAL_BUILD_README.md` and `load_canonical_catalog.sh`.
+
 This document covers the full end-to-end process for loading Open Library data
 into the three target tables.
 
@@ -113,8 +117,7 @@ for f in quillent_work_csv/quillent_work_*.csv; do
     psql -d <db> -c "\copy quillent_work \
         (id, uuid, title, sub_title, description, first_publication_date, \
          publication_date_epoch, isbn_ten, isbn_thirteen, language_code, \
-         num_of_pages, ol_id, cover_id, featured_edition, \
-         featured_edition_id, featured_edition_fk, series, \
+         num_of_pages, ol_id, cover_id, featured_edition_fk, series, \
          position_in_series, reading_id, prh_id, goodreads_resolved, \
          google_resolved, featured_covers) \
         FROM '$f' CSV HEADER;"
@@ -186,7 +189,7 @@ for f in work_editions_csv/work_editions_*.csv; do
         (uuid, work_id, isbn_ten, isbn_thirteen, publication_date, \
          publication_year, ol_id, work_ol_id, number_of_pages, lccn, \
          oclc_number, publisher, series, goodreads_id, google_id, \
-         asin, is_featured) \
+         asin) \
         FROM '$f' CSV HEADER;"
 done
 ```
@@ -357,7 +360,7 @@ Books, etc.):
 |-------|--------|--------|
 | quillent_work | isbn_ten, isbn_thirteen | Editions data (see note below) |
 | quillent_work | language_code, num_of_pages | Editions data |
-| quillent_work | featured_edition, featured_edition_id, featured_edition_fk | Set after choosing canonical edition |
+| quillent_work | featured_edition_fk | Set after choosing the canonical edition |
 | quillent_work | series, position_in_series | PRH or Goodreads feed |
 | quillent_work | prh_id, reading_id | PRH feed |
 | quillent_work | goodreads_resolved, google_resolved | Set after enrichment runs |

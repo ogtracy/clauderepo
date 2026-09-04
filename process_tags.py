@@ -7,12 +7,8 @@ generates two CSV files:
   - search_tag.csv     (id, uuid, tag_name, prevalence, weight)
   - work_tags.csv      (work_id, tag_id)
 
-Tag cleaning strategy:
-  1. Split on multiple delimiters: ;  ,  |  /  :
-  2. Normalize: lowercase, trim, normalize whitespace
-  3. Remove leading/trailing punctuation
-  4. Filter by length (min 2, max 80 characters)
-  5. Keep all tags (no deduplication)
+Each input row represents exactly one Open Library subject. Punctuation inside
+that subject is data and is never treated as a relationship delimiter.
 
 Usage:
     python3 process_tags.py                # process all
@@ -23,6 +19,7 @@ import csv
 import os
 import re
 import sys
+import unicodedata
 from collections import defaultdict
 from typing import List, Dict, Set
 
@@ -34,10 +31,6 @@ WORK_TAGS_FILE = "work_tags.csv"
 # Tag constraints
 MIN_TAG_LENGTH = 2
 MAX_TAG_LENGTH = 80
-
-# Regex for splitting on multiple delimiters
-# Split on: semicolon, pipe, comma, colon (when followed by space), slash (when surrounded by spaces)
-SPLIT_PATTERN = re.compile(r'\s*[;|,]\s*|\s+/\s+|\s*:\s+')
 
 # Regex for removing leading/trailing punctuation
 PUNCT_PATTERN = re.compile(r'^[\W_]+|[\W_]+$')
@@ -53,8 +46,8 @@ def clean_tag(raw_tag: str) -> str:
     Returns:
         Cleaned tag string, or empty string if invalid
     """
-    # Lowercase
-    tag = raw_tag.lower()
+    # Normalize Unicode compatibility variants and case consistently.
+    tag = unicodedata.normalize("NFKC", raw_tag).casefold()
 
     # Normalize whitespace (multiple spaces/tabs → single space)
     tag = ' '.join(tag.split())
@@ -70,35 +63,6 @@ def clean_tag(raw_tag: str) -> str:
         return ""
 
     return tag
-
-
-def split_and_clean_subjects(subjects_str: str) -> List[str]:
-    """
-    Split a subjects string into individual cleaned tags.
-
-    Args:
-        subjects_str: Semicolon/comma/pipe-separated subjects string
-
-    Returns:
-        List of cleaned, unique tags
-    """
-    if not subjects_str:
-        return []
-
-    # Split on multiple delimiters
-    raw_tags = SPLIT_PATTERN.split(subjects_str)
-
-    # Clean each tag
-    cleaned = []
-    seen = set()  # Deduplicate within single work (but not across works)
-
-    for raw in raw_tags:
-        tag = clean_tag(raw)
-        if tag and tag not in seen:
-            cleaned.append(tag)
-            seen.add(tag)
-
-    return cleaned
 
 
 def process_tags(input_file: str, output_dir: str, test_mode: bool = False):
@@ -128,27 +92,25 @@ def process_tags(input_file: str, output_dir: str, test_mode: bool = False):
     print("Phase 1: Reading subjects and building vocabulary...")
     tag_vocabulary = defaultdict(int)  # {tag_name: count}
     work_tags_map = {}  # {work_id: [tag1, tag2, ...]}
-    works_processed = 0
+    subject_rows_processed = 0
 
     with open(input_file, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             work_id = int(row["work_id"])
-            subjects_str = row["subjects"]
+            tag = clean_tag(row["subject"])
 
-            # Split and clean
-            tags = split_and_clean_subjects(subjects_str)
-
-            if tags:
-                work_tags_map[work_id] = tags
-                for tag in tags:
+            if tag:
+                tags = work_tags_map.setdefault(work_id, [])
+                if tag not in tags:
+                    tags.append(tag)
                     tag_vocabulary[tag] += 1
 
-            works_processed += 1
-            if works_processed % 100000 == 0:
-                print(f"  Processed {works_processed:,} works, {len(tag_vocabulary):,} unique tags found")
+            subject_rows_processed += 1
+            if subject_rows_processed % 100000 == 0:
+                print(f"  Processed {subject_rows_processed:,} subject rows, {len(tag_vocabulary):,} unique tags found")
 
-            if test_mode and works_processed >= 1000:
+            if test_mode and len(work_tags_map) >= 1000:
                 print(f"  TEST MODE: stopping at 1,000 works")
                 break
 
@@ -166,7 +128,7 @@ def process_tags(input_file: str, output_dir: str, test_mode: bool = False):
     tag_to_id = {}  # {tag_name: tag_id}
     tag_records = []  # List of dicts for search_tag.csv
 
-    total_works = works_processed
+    total_works = len(work_tags_map)
     for idx, (tag_name, prevalence) in enumerate(sorted_tags, start=1):
         tag_id = idx
         uuid = f"/tags/{tag_name.replace(' ', '-')}"
@@ -237,11 +199,12 @@ def process_tags(input_file: str, output_dir: str, test_mode: bool = False):
     print(f"  {work_tags_path}")
     print()
     print(f"Statistics:")
-    print(f"  Works processed:      {works_processed:,}")
+    print(f"  Subject rows processed: {subject_rows_processed:,}")
     print(f"  Works with subjects:  {len(work_tags_map):,}")
     print(f"  Unique tags:          {len(tag_records):,}")
     print(f"  Work-tag associations: {total_associations:,}")
-    print(f"  Avg tags per work:    {total_associations / len(work_tags_map):.1f}")
+    average = total_associations / len(work_tags_map) if work_tags_map else 0
+    print(f"  Avg tags per work:    {average:.1f}")
     print()
     print(f"To load into PostgreSQL:")
     print(f"  \\copy search_tag (id,uuid,tag_name,prevalence,weight)")

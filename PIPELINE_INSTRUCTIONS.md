@@ -110,6 +110,38 @@ file into memory, so RAM usage stays low regardless of file size.
 
 ## Stage 2 — Parse dumps to CSV
 
+### Validate tags on a small subset first
+
+Run the complete works-to-tags path on the bundled five-work fixture:
+
+```bash
+python3 run_small_tag_pipeline.py \
+  --input test_works_sample.txt \
+  --limit 5 \
+  --output-dir sample_tag_run
+```
+
+To exercise real Open Library data without parsing the entire dump, point the
+same command at the downloaded works dump. The reader stops after the requested
+number of valid records and does not extract or copy the full gzip file:
+
+```bash
+python3 run_small_tag_pipeline.py \
+  --input ol_dump_works_latest.txt.gz \
+  --limit 10000 \
+  --output-dir real_tag_sample_10000
+```
+
+Inspect these outputs before proceeding:
+
+- `real_tag_sample_10000/tag_audit.csv` shows the original subject, normalized
+  tag, acceptance status, and rejection reason.
+- `real_tag_sample_10000/tags_csv/search_tag.csv` shows the final tag vocabulary.
+- `real_tag_sample_10000/tags_csv/work_tags.csv` shows the generated links.
+
+The command refuses to write into a non-empty output directory so a prior test
+run cannot be silently mixed with a new one.
+
 Each converter script reads the `.gz` file directly and writes split CSV files
 (10,000 records per file) into an output directory.
 
@@ -135,6 +167,8 @@ python3 openlibrary_works_to_csv.py
 - Columns: `key, type, revision, last_modified, title, subtitle, authors,`
            `subjects, subject_places, subject_times, description,`
            `first_publish_date, covers, number_of_editions`
+- Collection-valued cells are JSON arrays. They are not delimiter-packed and
+  are not truncated.
 
 ### Editions → editions_csv/
 
@@ -148,6 +182,8 @@ python3 openlibrary_editions_to_csv.py
            `works, publishers, publish_date, publish_places, isbn_10, isbn_13,`
            `lccn, oclc_numbers, number_of_pages, pagination, physical_format,`
            `covers, languages`
+- Collection-valued cells are JSON arrays. They are not delimiter-packed and
+  are not truncated.
 
 ### Running all three in parallel
 
@@ -189,6 +225,8 @@ python3 transform_authors_to_work_creator.py
 
 - Input:  `authors_csv/`
 - Output: `work_creator_csv/work_creator_0001.csv`, …
+- Additional lossless outputs: `author_alternate_names.csv` and
+  `author_external_links.csv`, used as evidence during author deduplication.
 - Column mapping:
 
   | authors CSV | work_creator |
@@ -209,7 +247,9 @@ python3 transform_works_to_quillent_work.py
 - Input:  `works_csv/`
 - Output:
   - `quillent_work_csv/quillent_work_0001.csv`, …
-  - `quillent_work_csv/work_subjects.csv` (intermediate file for tag processing)
+  - `quillent_work_csv/work_subjects.csv` (one original subject per row)
+  - `quillent_work_csv/work_authors.csv` (one author relationship per row)
+  - `quillent_work_csv/work_covers.csv` (one cover relationship per row)
 - Notable mappings:
   - `key` → `uuid` and `ol_id` (bare suffix)
   - `subtitle` → `sub_title`
@@ -219,7 +259,7 @@ python3 transform_works_to_quillent_work.py
     `featured_covers` (JSON int array, `-1` placeholders removed)
   - `goodreads_resolved`, `google_resolved` → `false`
   - Fields not in OL works data (`isbn_ten/thirteen`, `language_code`,
-    `num_of_pages`, `featured_edition*`, `series`, `prh_id`) → empty
+    `num_of_pages`, `series`, `prh_id`) → empty; `featured_edition_fk` is null
   - `subjects` → extracted to `work_subjects.csv` for tag processing
 
 ### work_subjects.csv → tags_csv/ (tags)
@@ -237,7 +277,7 @@ This script processes Open Library subjects into clean tags.
   - `tags_csv/search_tag.csv` (id, uuid, tag_name, prevalence, weight)
   - `tags_csv/work_tags.csv` (work_id, tag_id)
 - Processing:
-  - Splits subjects on delimiters: `;` `,` `|` `/` `:` (when followed by space)
+  - Treats each source subject as one tag; punctuation is preserved
   - Cleans tags: lowercase, trim, normalize whitespace, remove punctuation
   - Filters by length: 2-80 characters
   - Assigns sequential IDs (sorted by prevalence, descending)
@@ -257,17 +297,21 @@ eliminating the need for post-load UPDATE JOIN.
 
 - Input:  `editions_csv/` and `quillent_work_csv/` (for ID mapping)
 - Output: `work_editions_csv/work_editions_0001.csv`, …
+- Additional lossless outputs: `edition_works.csv`, `edition_authors.csv`,
+  `edition_identifiers.csv`, `edition_publishers.csv`, `edition_covers.csv`,
+  and `edition_languages.csv`.
 - Reads quillent_work CSVs to build ol_id → id mapping in memory
 - Notable mappings:
   - `key` → `uuid` and `ol_id` (bare suffix e.g. `OL1M`)
-  - `works[0]` → `work_ol_id` (first linked work's bare ID e.g. `OL1W`)
+  - `works[0]` → `work_ol_id` for the transitional canonical row; all links
+    remain available in `edition_works.csv`
   - `work_id` → resolved from quillent_work CSV mapping (0 if work not found)
-  - `publishers[0]` → `publisher` (first semicolon-delimited value)
+  - `publishers[0]` → `publisher`; all publishers are preserved separately
   - `isbn_10[0]` / `isbn_13[0]` → `isbn_ten` / `isbn_thirteen`
   - `lccn[0]` → `lccn`, `oclc_numbers[0]` → `oclc_number`
   - `publish_date` → `publication_date` (raw) and
     `publication_year` (4-digit year extracted via regex)
-  - `is_featured` → `false`
+  - Featured-edition selection happens after all editions are loaded
   - Fields not in OL data (`series`, `goodreads_id`, `google_id`, `asin`)
     → empty
 
@@ -347,7 +391,7 @@ done
 
 # Load works (with pre-assigned IDs)
 for f in quillent_work_csv/quillent_work_*.csv; do
-    psql -d <db> -c "\copy quillent_work (id,uuid,title,sub_title,description,first_publication_date,publication_date_epoch,isbn_ten,isbn_thirteen,language_code,num_of_pages,ol_id,cover_id,featured_edition,featured_edition_id,featured_edition_fk,series,position_in_series,reading_id,prh_id,goodreads_resolved,google_resolved,featured_covers) FROM '$f' CSV HEADER;"
+    psql -d <db> -c "\copy quillent_work (id,uuid,title,sub_title,description,first_publication_date,publication_date_epoch,isbn_ten,isbn_thirteen,language_code,num_of_pages,ol_id,cover_id,featured_edition_fk,series,position_in_series,reading_id,prh_id,goodreads_resolved,google_resolved,featured_covers) FROM '$f' CSV HEADER;"
 done
 psql -d <db> -c "SELECT setval('quillent_work_id_seq', (SELECT MAX(id) FROM quillent_work));"
 
@@ -357,7 +401,7 @@ psql -d <db> -c "SELECT setval('search_tag_id_seq', (SELECT MAX(id) FROM search_
 
 # Load editions (work_id already resolved)
 for f in work_editions_csv/work_editions_*.csv; do
-    psql -d <db> -c "\copy work_editions (uuid,work_id,isbn_ten,isbn_thirteen,publication_date,publication_year,ol_id,work_ol_id,number_of_pages,lccn,oclc_number,publisher,series,goodreads_id,google_id,asin,is_featured) FROM '$f' CSV HEADER;"
+    psql -d <db> -c "\copy work_editions (uuid,work_id,isbn_ten,isbn_thirteen,publication_date,publication_year,ol_id,work_ol_id,number_of_pages,lccn,oclc_number,publisher,series,goodreads_id,google_id,asin) FROM '$f' CSV HEADER;"
 done
 
 # Load work-tag associations

@@ -143,7 +143,7 @@ python3 openlibrary_works_to_csv.py
 - Parses tab-separated JSONL format
 - Extracts work information (title, authors, subjects, description, etc.)
 - **Splits into multiple CSV files** (10,000 records each)
-- **Proper CSV escaping** with semicolon-separated lists
+- **Lossless JSON arrays** for collection-valued fields
 - Outputs clean CSV with 14 columns
 - Test mode for working with sample data
 - Progress indicators for download and conversion
@@ -173,9 +173,15 @@ python3 openlibrary_editions_to_csv.py
 - Parses tab-separated JSONL format
 - Extracts edition information (title, publisher, ISBN, pages, etc.)
 - **Splits into multiple CSV files** (10,000 records each)
-- **Proper CSV escaping** with semicolon-separated publishers
+- **Lossless JSON arrays** for collection-valued fields
 - Outputs clean CSV with 20 columns
 - Test mode for working with sample data
 - Progress indicators for download and conversion
 
 **Output**: Directory `editions_csv/` containing files like `editions_0001.csv`, `editions_0002.csv`, etc. with fields like title, publishers, publish_date, isbn_10, isbn_13, number_of_pages, physical_format, etc.
+
+## Canonical rebuild
+
+For deduplication, canonical numeric IDs, featured-edition selection, author
+tag profiles, similar-author generation, connected sampling, and PostgreSQL
+restore instructions, see [CANONICAL_BUILD_README.md](CANONICAL_BUILD_README.md).

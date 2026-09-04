@@ -39,7 +39,7 @@ The script extracts the following fields:
 | `birth_date` | Birth year or date |
 | `death_date` | Death year or date |
 | `bio` | Author biography |
-| `alternate_names` | Comma-separated list of alternate names |
+| `alternate_names` | JSON array of alternate names |
 | `wikipedia` | Wikipedia URL (if available) |
 | `website` | Author's website (if available) |
 

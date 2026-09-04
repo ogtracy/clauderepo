@@ -148,10 +148,11 @@ def parse_author_record(line: str) -> Optional[Dict[str, Any]]:
 
         # Handle alternate names
         alternate_names = author_data.get('alternate_names', [])
-        if alternate_names:
-            result['alternate_names'] = ', '.join(alternate_names)
-        else:
-            result['alternate_names'] = ''
+        result['alternate_names'] = json.dumps(
+            [name for name in alternate_names if isinstance(name, str) and name],
+            ensure_ascii=False,
+            separators=(',', ':'),
+        ) if isinstance(alternate_names, list) else '[]'
 
         return result
 

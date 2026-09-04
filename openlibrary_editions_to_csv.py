@@ -121,20 +121,20 @@ def parse_edition_record(line: str) -> Optional[Dict[str, Any]]:
             'last_modified': last_modified,
             'title': edition_data.get('title', ''),
             'subtitle': edition_data.get('subtitle', ''),
-            'authors': '',
-            'works': '',
-            'publishers': '',
+            'authors': '[]',
+            'works': '[]',
+            'publishers': '[]',
             'publish_date': edition_data.get('publish_date', ''),
-            'publish_places': '',
-            'isbn_10': '',
-            'isbn_13': '',
-            'lccn': '',
-            'oclc_numbers': '',
+            'publish_places': '[]',
+            'isbn_10': '[]',
+            'isbn_13': '[]',
+            'lccn': '[]',
+            'oclc_numbers': '[]',
             'number_of_pages': '',
             'pagination': edition_data.get('pagination', ''),
             'physical_format': edition_data.get('physical_format', ''),
-            'covers': '',
-            'languages': '',
+            'covers': '[]',
+            'languages': '[]',
         }
 
         # Handle authors (list of author keys)
@@ -146,7 +146,9 @@ def parse_edition_record(line: str) -> Optional[Dict[str, Any]]:
                     author_key = author.get('key', '')
                     if author_key:
                         author_keys.append(author_key)
-            result['authors'] = ', '.join(filter(None, author_keys))
+            result['authors'] = json.dumps(
+                list(filter(None, author_keys)), ensure_ascii=False, separators=(',', ':')
+            )
 
         # Handle works (list of work keys)
         works = edition_data.get('works', [])
@@ -157,40 +159,50 @@ def parse_edition_record(line: str) -> Optional[Dict[str, Any]]:
                     work_key = work.get('key', '')
                     if work_key:
                         work_keys.append(work_key)
-            result['works'] = ', '.join(filter(None, work_keys))
+            result['works'] = json.dumps(
+                list(filter(None, work_keys)), ensure_ascii=False, separators=(',', ':')
+            )
 
         # Handle publishers (list of strings)
         publishers = edition_data.get('publishers', [])
         if publishers and isinstance(publishers, list):
-            result['publishers'] = '; '.join(publishers[:5])  # Limit to first 5
+            result['publishers'] = json.dumps(
+                [publisher for publisher in publishers if isinstance(publisher, str)],
+                ensure_ascii=False,
+                separators=(',', ':'),
+            )
 
         # Handle publish_places
         publish_places = edition_data.get('publish_places', [])
         if publish_places and isinstance(publish_places, list):
-            result['publish_places'] = '; '.join(publish_places[:5])
+            result['publish_places'] = json.dumps(
+                [place for place in publish_places if isinstance(place, str)],
+                ensure_ascii=False,
+                separators=(',', ':'),
+            )
 
         # Handle ISBN-10
         isbn_10 = edition_data.get('isbn_10', [])
         if isbn_10 and isinstance(isbn_10, list):
-            result['isbn_10'] = ', '.join(isbn_10[:3])  # Limit to first 3
+            result['isbn_10'] = json.dumps(isbn_10, ensure_ascii=False, separators=(',', ':'))
 
         # Handle ISBN-13
         isbn_13 = edition_data.get('isbn_13', [])
         if isbn_13 and isinstance(isbn_13, list):
-            result['isbn_13'] = ', '.join(isbn_13[:3])
+            result['isbn_13'] = json.dumps(isbn_13, ensure_ascii=False, separators=(',', ':'))
 
         # Handle LCCN (Library of Congress Control Number)
         lccn = edition_data.get('lccn', [])
         if lccn:
             if isinstance(lccn, list):
-                result['lccn'] = ', '.join(lccn[:2])
+                result['lccn'] = json.dumps(lccn, ensure_ascii=False, separators=(',', ':'))
             elif isinstance(lccn, str):
-                result['lccn'] = lccn
+                result['lccn'] = json.dumps([lccn], ensure_ascii=False, separators=(',', ':'))
 
         # Handle OCLC numbers
         oclc = edition_data.get('oclc_numbers', [])
         if oclc and isinstance(oclc, list):
-            result['oclc_numbers'] = ', '.join(oclc[:3])
+            result['oclc_numbers'] = json.dumps(oclc, ensure_ascii=False, separators=(',', ':'))
 
         # Handle number of pages
         if 'number_of_pages' in edition_data:
@@ -202,9 +214,9 @@ def parse_edition_record(line: str) -> Optional[Dict[str, Any]]:
         covers = edition_data.get('covers', [])
         if covers and isinstance(covers, list):
             # Filter out -1 (placeholder for missing covers)
-            valid_covers = [str(c) for c in covers if c != -1]
+            valid_covers = [c for c in covers if isinstance(c, int) and c != -1]
             if valid_covers:
-                result['covers'] = ', '.join(valid_covers[:3])  # Limit to first 3
+                result['covers'] = json.dumps(valid_covers, separators=(',', ':'))
 
         # Handle languages
         languages = edition_data.get('languages', [])
@@ -217,7 +229,9 @@ def parse_edition_record(line: str) -> Optional[Dict[str, Any]]:
                     if lang_key:
                         lang_code = lang_key.split('/')[-1]
                         lang_codes.append(lang_code)
-            result['languages'] = ', '.join(filter(None, lang_codes))
+            result['languages'] = json.dumps(
+                list(filter(None, lang_codes)), ensure_ascii=False, separators=(',', ':')
+            )
 
         return result
 

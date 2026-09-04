@@ -39,20 +39,20 @@ The script extracts the following fields:
 | `last_modified` | Timestamp of last modification |
 | `title` | Edition title |
 | `subtitle` | Edition subtitle (if available) |
-| `authors` | Comma-separated list of author keys |
-| `works` | Comma-separated list of work keys |
-| `publishers` | Semicolon-separated list of publishers (up to 5) |
+| `authors` | JSON array of author keys |
+| `works` | JSON array of work keys |
+| `publishers` | JSON array of publishers |
 | `publish_date` | Publication date |
-| `publish_places` | Semicolon-separated list of publication places (up to 5) |
-| `isbn_10` | Comma-separated list of ISBN-10 identifiers (up to 3) |
-| `isbn_13` | Comma-separated list of ISBN-13 identifiers (up to 3) |
+| `publish_places` | JSON array of publication places |
+| `isbn_10` | JSON array of ISBN-10 identifiers |
+| `isbn_13` | JSON array of ISBN-13 identifiers |
 | `lccn` | Library of Congress Control Number |
-| `oclc_numbers` | OCLC numbers (up to 3) |
+| `oclc_numbers` | JSON array of OCLC numbers |
 | `number_of_pages` | Number of pages |
 | `pagination` | Pagination details (e.g., "xii, 320 p.") |
 | `physical_format` | Format (Hardcover, Paperback, etc.) |
-| `covers` | Comma-separated list of cover IDs (up to 3) |
-| `languages` | Comma-separated language codes |
+| `covers` | JSON array of valid cover IDs |
+| `languages` | JSON array of language codes |
 
 ## Usage
 
@@ -113,7 +113,7 @@ The script uses Python's `csv.QUOTE_NONNUMERIC` quoting mode to ensure data inte
 - **Commas in titles**: Properly quoted (e.g., `"Murder Mystery, Vol. 1"`)
 - **Semicolons in publishers**: Preserved (used as separator)
 - **Multiple authors**: Joined with commas in proper CSV field
-- **ISBNs**: Comma-separated within a single field
+- **ISBNs**: Preserved as JSON arrays within a single CSV field
 - **Special characters**: Handled without corruption
 
 Example of properly escaped data:
@@ -122,7 +122,7 @@ Example of properly escaped data:
 "/books/OL2M","/type/edition","2","2009-05-15T10:22:33.123456","Murder Mystery, Vol. 1","","/authors/OL2A, /authors/OL3A","/works/OL2W","Mystery Press","March 2005","London","9876543210","","2005012345","12345678","320","xii, 320 p.","Paperback","789012, 345678","eng"
 ```
 
-The title with commas is properly quoted, multiple authors are comma-separated, and multiple covers are comma-separated.
+The title with commas is properly quoted, and collection values remain distinct JSON elements.
 
 ## Example Output
 

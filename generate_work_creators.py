@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Dict, Tuple
 
+from collection_fields import string_values
+
 csv.field_size_limit(10_000_000)
 
 WORKS_INPUT_DIR = "works_csv"          # Original works data with authors
@@ -24,7 +26,7 @@ def load_work_id_mapping(quillent_work_dir: Path) -> Dict[str, str]:
     Returns dict: {uuid: work_id}
     """
     mapping = {}
-    csv_files = sorted(quillent_work_dir.glob("*.csv"))
+    csv_files = sorted(quillent_work_dir.glob("quillent_work_*.csv"))
 
     for csv_file in csv_files:
         with open(csv_file, "r", encoding="utf-8", newline="") as f:
@@ -57,7 +59,7 @@ def process_csv(input_path: Path, output_path: Path, work_id_mapping: Dict[str, 
             total_works += 1
 
             work_key = row.get("key", "").strip('"')
-            authors_str = row.get("authors", "")
+            authors_json = row.get("authors", "[]")
 
             # Get work_id from mapping
             work_id = work_id_mapping.get(work_key)
@@ -66,11 +68,7 @@ def process_csv(input_path: Path, output_path: Path, work_id_mapping: Dict[str, 
                 skipped_works += 1
                 continue
 
-            if not authors_str:
-                continue
-
-            # Authors are comma-separated author keys: /authors/OL1A, /authors/OL2A
-            author_keys = [key.strip() for key in authors_str.split(',') if key.strip()]
+            author_keys = string_values(authors_json)
 
             for author_key in author_keys:
                 writer.writerow({

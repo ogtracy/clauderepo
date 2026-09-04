@@ -19,8 +19,6 @@ DB-ready CSV files into quillent_work_csv/ matching:
         num_of_pages          INTEGER   -- empty (lives in editions)
         ol_id                 VARCHAR   -- bare OL ID e.g. OL1W
         cover_id              BIGINT    -- first cover ID from covers list
-        featured_edition      VARCHAR   -- empty (denormalized, set later)
-        featured_edition_id   VARCHAR   -- empty (legacy, set later)
         featured_edition_fk   BIGINT    -- empty (FK set later)
         series                VARCHAR   -- empty (not in OL works)
         position_in_series    VARCHAR   -- empty
@@ -44,12 +42,16 @@ import sys
 from datetime import date, datetime
 from typing import Optional
 
+from collection_fields import parse_json_list, string_values
+
 
 csv.field_size_limit(10_000_000)
 
 INPUT_DIR = "works_csv"
 OUTPUT_DIR = "quillent_work_csv"
 SUBJECTS_OUTPUT = "work_subjects.csv"  # Intermediate file for tag processing
+AUTHORS_OUTPUT = "work_authors.csv"
+COVERS_OUTPUT = "work_covers.csv"
 MAX_DESCRIPTION = 5000
 MAX_TITLE_LENGTH = 1000
 
@@ -68,8 +70,6 @@ FIELDNAMES = [
     "num_of_pages",
     "ol_id",
     "cover_id",
-    "featured_edition",
-    "featured_edition_id",
     "featured_edition_fk",
     "series",
     "position_in_series",
@@ -124,30 +124,16 @@ def ol_key_to_id(key: str) -> str:
     return key.rstrip("/").rsplit("/", 1)[-1]
 
 
-def first_cover_id(covers_str: str) -> str:
-    """Return the first numeric cover ID from a comma-separated list, or ''."""
-    if not covers_str:
-        return ""
-    for part in covers_str.split(","):
-        part = part.strip()
-        if part.lstrip("-").isdigit() and not part.startswith("-"):
-            return part
-    return ""
+def cover_ids(covers_json: str) -> list:
+    """Return valid positive integer cover IDs from a JSON-array field."""
+    return [cover for cover in parse_json_list(covers_json)
+            if isinstance(cover, int) and cover > 0]
 
 
-def covers_as_json(covers_str: str) -> str:
-    """Convert comma-separated cover IDs to a JSON array string, skipping -1."""
-    if not covers_str:
-        return ""
-    ids = []
-    for part in covers_str.split(","):
-        part = part.strip()
-        if part.lstrip("-").isdigit() and not part.startswith("-"):
-            try:
-                ids.append(int(part))
-            except ValueError:
-                pass
-    return json.dumps(ids) if ids else ""
+def covers_as_json(covers_json: str) -> str:
+    """Return normalized JSON for all valid source cover IDs."""
+    ids = cover_ids(covers_json)
+    return json.dumps(ids, separators=(",", ":")) if ids else ""
 
 
 def transform_row(row: dict, work_id: int) -> dict:
@@ -167,7 +153,7 @@ def transform_row(row: dict, work_id: int) -> dict:
 
     # For integer columns, use None instead of "" for proper NULL in CSV
     epoch_day = parse_epoch_day(date_str)
-    cover_id_str = first_cover_id(covers_str)
+    covers = cover_ids(covers_str)
 
     # Truncate long fields
     desc = row.get("description", "")
@@ -195,9 +181,7 @@ def transform_row(row: dict, work_id: int) -> dict:
         "language_code":          "",
         "num_of_pages":           None,  # INTEGER column
         "ol_id":                  ol_key_to_id(key) if key else "",
-        "cover_id":               int(cover_id_str) if cover_id_str else None,
-        "featured_edition":       "",
-        "featured_edition_id":    "",
+        "cover_id":               covers[0] if covers else None,
         "featured_edition_fk":    None,  # INTEGER column
         "series":                 "",
         "position_in_series":     None,  # INTEGER column
@@ -229,11 +213,20 @@ def transform_files(input_dir: str, output_dir: str, test_mode: bool = False):
     total_written = 0
     current_id = 1  # Pre-assign IDs starting from 1
 
-    # Open subjects file for writing (append mode across all input files)
+    # Relationship files use one row per source value. Never infer list
+    # boundaries from punctuation inside a subject or name.
     subjects_path = os.path.join(output_dir, SUBJECTS_OUTPUT)
-    with open(subjects_path, "w", encoding="utf-8", newline="") as f_subjects:
+    authors_path = os.path.join(output_dir, AUTHORS_OUTPUT)
+    covers_path = os.path.join(output_dir, COVERS_OUTPUT)
+    with open(subjects_path, "w", encoding="utf-8", newline="") as f_subjects, \
+         open(authors_path, "w", encoding="utf-8", newline="") as f_authors, \
+         open(covers_path, "w", encoding="utf-8", newline="") as f_covers:
         subjects_writer = csv.writer(f_subjects, quoting=csv.QUOTE_MINIMAL)
-        subjects_writer.writerow(["work_id", "subjects"])  # Header
+        authors_writer = csv.writer(f_authors, quoting=csv.QUOTE_MINIMAL)
+        covers_writer = csv.writer(f_covers, quoting=csv.QUOTE_MINIMAL)
+        subjects_writer.writerow(["work_id", "work_external_id", "subject"])
+        authors_writer.writerow(["work_id", "work_external_id", "author_external_id"])
+        covers_writer.writerow(["work_id", "work_external_id", "cover_id", "position"])
 
         for fname in csv_files:
             in_path = os.path.join(input_dir, fname)
@@ -253,12 +246,19 @@ def transform_files(input_dir: str, output_dir: str, test_mode: bool = False):
                 )
                 writer.writeheader()
                 for row in reader:
-                    writer.writerow(transform_row(row, current_id))
+                    transformed = transform_row(row, current_id)
+                    writer.writerow(transformed)
 
-                    # Write subjects to intermediate file
-                    subjects = row.get("subjects", "")
-                    if subjects:  # Only write if subjects exist
-                        subjects_writer.writerow([current_id, subjects])
+                    work_external_id = transformed["uuid"]
+                    for subject in string_values(row.get("subjects", "[]")):
+                        subjects_writer.writerow([current_id, work_external_id, subject])
+                    for author_key in string_values(row.get("authors", "[]")):
+                        authors_writer.writerow([current_id, work_external_id, author_key])
+                    for position, cover_id in enumerate(
+                            cover_ids(row.get("covers", "[]")), start=1):
+                        covers_writer.writerow(
+                            [current_id, work_external_id, cover_id, position]
+                        )
 
                     current_id += 1
                     written += 1
@@ -270,6 +270,8 @@ def transform_files(input_dir: str, output_dir: str, test_mode: bool = False):
     print(f"\nDone. {total_written:,} rows written to {output_dir}/")
     print(f"  IDs assigned: 1 to {current_id - 1}")
     print(f"  Subjects written to: {subjects_path}")
+    print(f"  Author relationships written to: {authors_path}")
+    print(f"  Cover relationships written to: {covers_path}")
     print(f"\nNext step — process tags:")
     print(f"  python3 process_tags.py")
     print()

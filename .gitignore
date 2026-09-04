@@ -1,5 +1,10 @@
 # Python
 __pycache__/
+*.duckdb
+.venv/
+.catalog-deps/
+sample_tag_run/
+canonical_sample_run/
 *.py[cod]
 *$py.class
 *.so

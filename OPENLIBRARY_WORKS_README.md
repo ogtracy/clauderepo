@@ -39,13 +39,13 @@ The script extracts the following fields:
 | `last_modified` | Timestamp of last modification |
 | `title` | Work title |
 | `subtitle` | Work subtitle (if available) |
-| `authors` | Comma-separated list of author keys |
-| `subjects` | Semicolon-separated list of subjects (up to 20) |
-| `subject_places` | Semicolon-separated list of places (up to 10) |
-| `subject_times` | Semicolon-separated list of time periods (up to 10) |
+| `authors` | JSON array of author keys |
+| `subjects` | JSON array of complete subjects |
+| `subject_places` | JSON array of places |
+| `subject_times` | JSON array of time periods |
 | `description` | Work description/summary |
 | `first_publish_date` | Year of first publication |
-| `covers` | Comma-separated list of cover IDs (up to 5) |
+| `covers` | JSON array of valid cover IDs |
 | `number_of_editions` | Number of editions for this work |
 
 ## Usage

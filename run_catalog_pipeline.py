@@ -41,12 +41,26 @@ def main():
     parser.add_argument("--works", required=True, type=Path)
     parser.add_argument("--editions", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument(
+        "--prh-data-dir", type=Path,
+        help="PRH data root (containing normalized/) or the normalized directory",
+    )
     parser.add_argument("--similar-authors-limit", type=int, default=20)
     parser.add_argument("--minimum-shared-tags", type=int, default=2)
     args = parser.parse_args()
     for path in (args.authors, args.works, args.editions):
         if not path.is_file() or path.suffix != ".gz":
             parser.error(f"expected an existing .gz dump: {path}")
+    if args.prh_data_dir:
+        normalized_prh = (
+            args.prh_data_dir / "normalized"
+            if (args.prh_data_dir / "normalized").is_dir()
+            else args.prh_data_dir
+        )
+        for filename in ("authors.jsonl", "works.jsonl", "editions.jsonl",
+                         "work_contributors.jsonl"):
+            if not (normalized_prh / filename).is_file():
+                parser.error(f"missing normalized PRH input: {normalized_prh / filename}")
 
     require_empty_or_resumable(args.output_dir)
     parsed = args.output_dir / "parsed"
@@ -72,6 +86,7 @@ def main():
             transformed, canonical, canonical / "catalog.duckdb",
             similar_limit=args.similar_authors_limit,
             minimum_shared_tags=args.minimum_shared_tags,
+            prh_data_dir=args.prh_data_dir,
         )
         try:
             summary = builder.run()
@@ -79,7 +94,11 @@ def main():
             builder.close()
         print(json.dumps(summary, indent=2, sort_keys=True))
 
-    stage(args.output_dir, "canonical_build", canonical_build)
+    stage(
+        args.output_dir,
+        "canonical_build_with_prh" if args.prh_data_dir else "canonical_build",
+        canonical_build,
+    )
     print(f"\nComplete canonical bundle: {canonical}")
 
 

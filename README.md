@@ -182,6 +182,10 @@ python3 openlibrary_editions_to_csv.py
 
 ## Canonical rebuild
 
+For already-downloaded Open Library dumps and normalized PRH product data, use
+`build_combined_catalog.py`. See `CANONICAL_BUILD_README.md` for the command and
+output contract.
+
 For deduplication, canonical numeric IDs, featured-edition selection, author
 tag profiles, similar-author generation, connected sampling, and PostgreSQL
 restore instructions, see [CANONICAL_BUILD_README.md](CANONICAL_BUILD_README.md).

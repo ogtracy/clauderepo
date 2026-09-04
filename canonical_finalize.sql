@@ -9,13 +9,22 @@ ALTER TABLE work_editions ADD PRIMARY KEY (id);
 ALTER TABLE work_editions ADD CONSTRAINT uk_work_editions_uuid UNIQUE (uuid);
 ALTER TABLE search_tag ADD PRIMARY KEY (id);
 ALTER TABLE search_tag ADD CONSTRAINT uk_search_tag_name UNIQUE (tag_name);
+ALTER TABLE book_series ADD PRIMARY KEY (id);
+ALTER TABLE book_series ADD CONSTRAINT uk_book_series_uuid UNIQUE (uuid);
 
 ALTER TABLE author_external_identifier ADD PRIMARY KEY (provider, external_id);
+ALTER TABLE prh_author_profile ADD PRIMARY KEY (author_id, prh_author_id);
 ALTER TABLE work_external_identifier ADD PRIMARY KEY (provider, external_id);
 ALTER TABLE edition_external_identifier ADD PRIMARY KEY (provider, external_id);
 ALTER TABLE work_creators ADD PRIMARY KEY (work_id, creator_id);
 ALTER TABLE edition_creators ADD PRIMARY KEY (edition_id, creator_id);
 ALTER TABLE work_tags ADD PRIMARY KEY (work_id, tag_id);
+ALTER TABLE work_cover_urls ADD PRIMARY KEY (work_id, url);
+ALTER TABLE prh_work_metadata ADD PRIMARY KEY (work_id, prh_work_id);
+ALTER TABLE prh_edition_metadata ADD PRIMARY KEY (edition_id, prh_work_id);
+ALTER TABLE work_tag_source ADD PRIMARY KEY (work_id, tag_id, provider, tag_source);
+ALTER TABLE series_external_identifier ADD PRIMARY KEY (provider, external_id);
+ALTER TABLE work_series ADD PRIMARY KEY (work_id, series_id);
 ALTER TABLE author_tag_profile ADD PRIMARY KEY (author_id, tag_id);
 ALTER TABLE author_profile_state ADD PRIMARY KEY (author_id);
 ALTER TABLE similar_author ADD PRIMARY KEY (author_id, similar_author_id);
@@ -23,10 +32,15 @@ ALTER TABLE similar_author ADD CONSTRAINT uk_similar_author_rank UNIQUE (author_
 ALTER TABLE author_profile_refresh_queue ADD PRIMARY KEY (author_id);
 
 ALTER TABLE author_external_identifier ADD FOREIGN KEY (author_id) REFERENCES work_creator(id) ON DELETE CASCADE;
+ALTER TABLE prh_author_profile ADD FOREIGN KEY (author_id) REFERENCES work_creator(id) ON DELETE CASCADE;
 ALTER TABLE author_alternate_name ADD FOREIGN KEY (author_id) REFERENCES work_creator(id) ON DELETE CASCADE;
 ALTER TABLE author_external_link ADD FOREIGN KEY (author_id) REFERENCES work_creator(id) ON DELETE CASCADE;
 ALTER TABLE work_external_identifier ADD FOREIGN KEY (work_id) REFERENCES quillent_work(id) ON DELETE CASCADE;
 ALTER TABLE work_cover ADD FOREIGN KEY (work_id) REFERENCES quillent_work(id) ON DELETE CASCADE;
+ALTER TABLE work_cover_urls ADD FOREIGN KEY (work_id) REFERENCES quillent_work(id) ON DELETE CASCADE;
+ALTER TABLE work_contributor ADD FOREIGN KEY (work_id) REFERENCES quillent_work(id) ON DELETE CASCADE;
+ALTER TABLE work_contributor ADD FOREIGN KEY (creator_id) REFERENCES work_creator(id) ON DELETE CASCADE;
+ALTER TABLE prh_work_metadata ADD FOREIGN KEY (work_id) REFERENCES quillent_work(id) ON DELETE CASCADE;
 ALTER TABLE work_editions ADD FOREIGN KEY (work_id) REFERENCES quillent_work(id) ON DELETE CASCADE;
 ALTER TABLE quillent_work ADD FOREIGN KEY (featured_edition_fk) REFERENCES work_editions(id);
 ALTER TABLE edition_external_identifier ADD FOREIGN KEY (edition_id) REFERENCES work_editions(id) ON DELETE CASCADE;
@@ -34,12 +48,18 @@ ALTER TABLE edition_identifier ADD FOREIGN KEY (edition_id) REFERENCES work_edit
 ALTER TABLE edition_publisher ADD FOREIGN KEY (edition_id) REFERENCES work_editions(id) ON DELETE CASCADE;
 ALTER TABLE edition_cover ADD FOREIGN KEY (edition_id) REFERENCES work_editions(id) ON DELETE CASCADE;
 ALTER TABLE edition_language ADD FOREIGN KEY (edition_id) REFERENCES work_editions(id) ON DELETE CASCADE;
+ALTER TABLE prh_edition_metadata ADD FOREIGN KEY (edition_id) REFERENCES work_editions(id) ON DELETE CASCADE;
 ALTER TABLE work_creators ADD FOREIGN KEY (work_id) REFERENCES quillent_work(id) ON DELETE CASCADE;
 ALTER TABLE work_creators ADD FOREIGN KEY (creator_id) REFERENCES work_creator(id) ON DELETE CASCADE;
 ALTER TABLE edition_creators ADD FOREIGN KEY (edition_id) REFERENCES work_editions(id) ON DELETE CASCADE;
 ALTER TABLE edition_creators ADD FOREIGN KEY (creator_id) REFERENCES work_creator(id) ON DELETE CASCADE;
 ALTER TABLE work_tags ADD FOREIGN KEY (work_id) REFERENCES quillent_work(id) ON DELETE CASCADE;
 ALTER TABLE work_tags ADD FOREIGN KEY (tag_id) REFERENCES search_tag(id) ON DELETE CASCADE;
+ALTER TABLE work_tag_source ADD FOREIGN KEY (work_id) REFERENCES quillent_work(id) ON DELETE CASCADE;
+ALTER TABLE work_tag_source ADD FOREIGN KEY (tag_id) REFERENCES search_tag(id) ON DELETE CASCADE;
+ALTER TABLE series_external_identifier ADD FOREIGN KEY (series_id) REFERENCES book_series(id) ON DELETE CASCADE;
+ALTER TABLE work_series ADD FOREIGN KEY (work_id) REFERENCES quillent_work(id) ON DELETE CASCADE;
+ALTER TABLE work_series ADD FOREIGN KEY (series_id) REFERENCES book_series(id) ON DELETE CASCADE;
 ALTER TABLE author_tag_profile ADD FOREIGN KEY (author_id) REFERENCES work_creator(id) ON DELETE CASCADE;
 ALTER TABLE author_tag_profile ADD FOREIGN KEY (tag_id) REFERENCES search_tag(id) ON DELETE CASCADE;
 ALTER TABLE author_profile_state ADD FOREIGN KEY (author_id) REFERENCES work_creator(id) ON DELETE CASCADE;
@@ -51,7 +71,9 @@ CREATE INDEX idx_author_external_identifier_author ON author_external_identifier
 CREATE INDEX idx_work_external_identifier_work ON work_external_identifier(work_id);
 CREATE INDEX idx_edition_external_identifier_edition ON edition_external_identifier(edition_id);
 CREATE INDEX idx_work_creators_creator_work ON work_creators(creator_id, work_id);
+CREATE INDEX idx_work_contributor_creator_work ON work_contributor(creator_id, work_id);
 CREATE INDEX idx_work_tags_tag_work ON work_tags(tag_id, work_id);
+CREATE INDEX idx_work_series_series_work ON work_series(series_id, work_id);
 CREATE INDEX idx_work_editions_work ON work_editions(work_id);
 CREATE INDEX idx_work_editions_isbn10 ON work_editions(isbn_ten) WHERE isbn_ten IS NOT NULL;
 CREATE INDEX idx_work_editions_isbn13 ON work_editions(isbn_thirteen) WHERE isbn_thirteen IS NOT NULL;
@@ -73,5 +95,8 @@ SELECT setval(pg_get_serial_sequence('work_editions', 'id'),
 SELECT setval(pg_get_serial_sequence('search_tag', 'id'),
               coalesce((SELECT max(id) FROM search_tag), 1),
               EXISTS (SELECT 1 FROM search_tag));
+SELECT setval(pg_get_serial_sequence('book_series', 'id'),
+              coalesce((SELECT max(id) FROM book_series), 1),
+              EXISTS (SELECT 1 FROM book_series));
 
 ANALYZE;

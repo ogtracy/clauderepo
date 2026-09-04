@@ -133,12 +133,14 @@ def connected_components(connection, nodes_sql: str, edges_table: str,
 
 class CatalogBuilder:
     def __init__(self, input_dir: Path, output_dir: Path, database: Path,
-                 similar_limit: int = 20, minimum_shared_tags: int = 2):
+                 similar_limit: int = 20, minimum_shared_tags: int = 2,
+                 prh_data_dir: Path | None = None):
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.database = database
         self.similar_limit = similar_limit
         self.minimum_shared_tags = minimum_shared_tags
+        self.prh_data_dir = self._normalized_prh_dir(prh_data_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         self.db = duckdb.connect(str(database))
         self.db.create_function("normalize_words", normalized_words, [VARCHAR], VARCHAR)
@@ -146,6 +148,27 @@ class CatalogBuilder:
         self.db.create_function("normalize_isbn", normalized_isbn, [VARCHAR], VARCHAR)
         self.db.create_function("extract_year", extracted_year, [VARCHAR], BIGINT)
         self.db.create_function("normalize_tag", clean_tag, [VARCHAR], VARCHAR)
+
+    @staticmethod
+    def _normalized_prh_dir(path: Path | None) -> Path | None:
+        if path is None:
+            return None
+        path = path.resolve()
+        normalized = path / "normalized"
+        return normalized if normalized.is_dir() else path
+
+    def load_optional_jsonl(self, table: str, filename: str, empty_sql: str):
+        path = self.prh_data_dir / filename if self.prh_data_dir else None
+        if path and path.is_file() and path.stat().st_size:
+            self.db.execute(f"""
+                CREATE OR REPLACE TABLE {table} AS
+                SELECT * FROM read_json_auto(
+                    '{sql_path(path)}', format = 'newline_delimited',
+                    union_by_name = true, maximum_object_size = 16777216
+                )
+            """)
+        else:
+            self.db.execute(f"CREATE OR REPLACE TABLE {table} AS {empty_sql}")
 
     def close(self):
         self.db.close()
@@ -170,7 +193,8 @@ class CatalogBuilder:
             CREATE OR REPLACE TABLE source_author AS
             SELECT uuid AS source_key, creator_name, personal_name,
                    birth_date, death_date, ol_id,
-                   normalize_words(creator_name) AS normalized_name
+                   normalize_words(creator_name) AS normalized_name,
+                   'openlibrary'::varchar AS source_provider
             FROM raw_author WHERE coalesce(uuid, '') <> '';
 
             CREATE OR REPLACE TABLE source_work AS
@@ -184,7 +208,8 @@ class CatalogBuilder:
                    prh_id, try_cast(goodreads_resolved AS boolean) AS goodreads_resolved,
                    try_cast(google_resolved AS boolean) AS google_resolved,
                    normalize_words(title) AS normalized_title,
-                   extract_year(first_publication_date) AS publication_year
+                   extract_year(first_publication_date) AS publication_year,
+                   'openlibrary'::varchar AS source_provider
             FROM raw_work WHERE coalesce(uuid, '') <> '';
 
             CREATE OR REPLACE TABLE source_work_author AS
@@ -207,6 +232,196 @@ class CatalogBuilder:
                    normalize_isbn(identifier) AS normalized_identifier,
                    try_cast(position AS integer) AS position
             FROM raw_edition_identifier;
+
+            CREATE OR REPLACE TABLE source_work_subject AS
+            SELECT work_external_id AS work_key, subject,
+                   'openlibrary'::varchar AS provider,
+                   'subject'::varchar AS tag_source
+            FROM raw_work_subject;
+
+            CREATE OR REPLACE TABLE source_edition_author AS
+            SELECT edition_external_id AS edition_key,
+                   author_external_id AS author_key
+            FROM raw_edition_author;
+        """)
+        self.load_prh()
+
+    def load_prh(self):
+        self.load_optional_jsonl("raw_prh_author", "authors.jsonl", """
+            SELECT NULL::bigint prh_author_id, NULL::varchar display,
+                   NULL::varchar prh_url
+            WHERE false
+        """)
+        self.load_optional_jsonl("raw_prh_author_profile", "author_profiles.jsonl", """
+            SELECT NULL::bigint prh_author_id, NULL::varchar biography_html,
+                   NULL::varchar photo_url, NULL::varchar photo_credit,
+                   NULL::varchar photo_date, NULL::varchar prh_url,
+                   NULL::bigint reported_work_count, NULL::json related_links
+            WHERE false
+        """)
+        self.load_optional_jsonl("raw_prh_work", "works.jsonl", """
+            SELECT NULL::bigint prh_work_id, NULL::varchar title,
+                   NULL::varchar subtitle, NULL::varchar prh_display_title,
+                   NULL::varchar first_onsale, NULL::varchar AS "language",
+                   NULL::varchar prh_url, NULL::varchar about_the_book_html,
+                   NULL::varchar keynote_html, NULL::varchar positioning_html,
+                   NULL::json awards, NULL::varchar frontlistiest_isbn,
+                   NULL::json isbn_counts WHERE false
+        """)
+        self.load_optional_jsonl("raw_prh_edition", "editions.jsonl", """
+            SELECT NULL::bigint prh_work_id, NULL::varchar isbn,
+                   NULL::varchar isbn10, NULL::varchar title,
+                   NULL::varchar subtitle, NULL::varchar publication_date,
+                   NULL::bigint pages, NULL::varchar trim_size,
+                   NULL::varchar format_family, NULL::varchar format_code,
+                   NULL::varchar format_name, NULL::varchar AS "version",
+                   NULL::varchar AS "language", NULL::varchar imprint_code,
+                   NULL::varchar imprint_name, NULL::varchar asin,
+                   NULL::varchar cover_url, NULL::varchar prh_url,
+                   NULL::varchar series_code, NULL::varchar series_name,
+                   NULL::varchar series_position, NULL::varchar[] subjects,
+                   NULL::varchar custom_subject_category,
+                   NULL::varchar sales_restriction, NULL::json raw_flags
+            WHERE false
+        """)
+        self.load_optional_jsonl("raw_prh_work_contributor", "work_contributors.jsonl", """
+            SELECT NULL::bigint prh_work_id, NULL::bigint prh_author_id,
+                   NULL::varchar display, NULL::varchar role_code,
+                   NULL::varchar role_description, NULL::boolean primary_flag,
+                   NULL::varchar[] observed_isbns WHERE false
+        """)
+        self.load_optional_jsonl("raw_prh_edition_contributor", "edition_contributors.jsonl", """
+            SELECT NULL::bigint prh_work_id, NULL::varchar isbn,
+                   NULL::bigint prh_author_id, NULL::varchar display,
+                   NULL::varchar role_code, NULL::varchar role_description,
+                   NULL::boolean primary_flag, NULL::integer ordinal WHERE false
+        """)
+        self.load_optional_jsonl("raw_prh_series", "series.jsonl", """
+            SELECT NULL::varchar prh_series_code, NULL::varchar AS "name",
+                   NULL::varchar description_html, NULL::bigint series_count,
+                   NULL::varchar series_date, NULL::boolean is_numbered,
+                   NULL::boolean is_kids, NULL::varchar prh_url WHERE false
+        """)
+        self.load_optional_jsonl("raw_prh_series_hint", "series_hints.jsonl", """
+            SELECT NULL::bigint prh_work_id, NULL::varchar prh_series_code,
+                   NULL::varchar series_name, NULL::varchar AS "position",
+                   NULL::varchar description_html, NULL::varchar prh_url
+            WHERE false
+        """)
+        self.load_optional_jsonl("raw_prh_work_series", "work_series.jsonl", """
+            SELECT NULL::varchar prh_series_code, NULL::bigint prh_work_id,
+                   NULL::varchar AS "position", NULL::varchar title,
+                   NULL::varchar first_onsale WHERE false
+        """)
+        self.load_optional_jsonl("raw_prh_keyword", "keywords.jsonl", """
+            SELECT NULL::bigint prh_work_id, NULL::varchar isbn,
+                   NULL::varchar[] candidates WHERE false
+        """)
+        if self.prh_data_dir is None:
+            return
+        for required in ("authors.jsonl", "works.jsonl", "editions.jsonl",
+                         "work_contributors.jsonl"):
+            if not (self.prh_data_dir / required).is_file():
+                raise FileNotFoundError(
+                    f"Missing required normalized PRH file: {self.prh_data_dir / required}"
+                )
+        self.integrate_prh_sources()
+
+    def integrate_prh_sources(self):
+        self.db.execute("""
+            INSERT INTO source_author
+            SELECT DISTINCT 'prh:author:' || prh_author_id, display, display,
+                   NULL, NULL, NULL, normalize_words(display), 'prh'
+            FROM raw_prh_author
+            WHERE prh_author_id IS NOT NULL AND coalesce(display, '') <> '';
+
+            INSERT INTO source_author
+            SELECT DISTINCT 'prh:author:' || contributor.prh_author_id,
+                   contributor.display, contributor.display, NULL, NULL, NULL,
+                   normalize_words(contributor.display), 'prh'
+            FROM raw_prh_work_contributor contributor
+            WHERE contributor.prh_author_id IS NOT NULL
+              AND coalesce(contributor.display, '') <> ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM source_author author
+                  WHERE author.source_key = 'prh:author:' || contributor.prh_author_id
+              );
+
+            INSERT INTO source_work
+            SELECT DISTINCT prh_work_id, 'prh:work:' || prh_work_id,
+                   title, subtitle, about_the_book_html, first_onsale::varchar,
+                   date_diff('day', DATE '1970-01-01', try_cast(first_onsale AS date)),
+                   NULL, NULL, language, NULL, NULL, NULL, NULL,
+                   NULL, NULL, NULL, prh_work_id::varchar, false, false,
+                   normalize_words(title), extract_year(first_onsale::varchar), 'prh'
+            FROM raw_prh_work
+            WHERE prh_work_id IS NOT NULL AND coalesce(title, '') <> '';
+
+            INSERT INTO source_edition_work
+            SELECT DISTINCT 'prh:edition:' || isbn,
+                   'prh:work:' || prh_work_id, 1
+            FROM raw_prh_edition
+            WHERE prh_work_id IS NOT NULL AND normalize_isbn(isbn) <> '';
+
+            INSERT INTO source_edition_identifier
+            SELECT DISTINCT 'prh:edition:' || isbn, 'isbn13', isbn,
+                   normalize_isbn(isbn), 1
+            FROM raw_prh_edition WHERE normalize_isbn(isbn) <> '';
+
+            INSERT INTO source_edition_identifier
+            SELECT DISTINCT 'prh:edition:' || isbn, 'isbn10', isbn10,
+                   normalize_isbn(isbn10), 1
+            FROM raw_prh_edition
+            WHERE normalize_isbn(isbn) <> '' AND normalize_isbn(isbn10) <> '';
+
+            INSERT INTO source_work_author
+            SELECT DISTINCT 'prh:work:' || prh_work_id,
+                   'prh:author:' || prh_author_id
+            FROM raw_prh_work_contributor
+            WHERE prh_author_id IS NOT NULL AND (
+                upper(coalesce(role_code, '')) IN ('A01', 'AUTHOR')
+                OR normalize_words(role_description) IN ('author', 'written by')
+            );
+
+            INSERT INTO source_edition_author
+            SELECT DISTINCT 'prh:edition:' || isbn,
+                   'prh:author:' || prh_author_id
+            FROM raw_prh_edition_contributor
+            WHERE prh_author_id IS NOT NULL AND normalize_isbn(isbn) <> '' AND (
+                upper(coalesce(role_code, '')) IN ('A01', 'AUTHOR')
+                OR normalize_words(role_description) IN ('author', 'written by')
+            );
+
+            INSERT INTO source_work_subject
+            SELECT DISTINCT 'prh:work:' || edition.prh_work_id, subject,
+                   'prh', 'subject'
+            FROM raw_prh_edition edition, unnest(edition.subjects) tags(subject)
+            WHERE coalesce(subject, '') <> '';
+
+            INSERT INTO source_work_subject
+            SELECT DISTINCT 'prh:work:' || keyword.prh_work_id, candidate,
+                   'prh', 'keyword'
+            FROM raw_prh_keyword keyword, unnest(keyword.candidates) tags(candidate)
+            WHERE coalesce(candidate, '') <> '';
+
+            INSERT INTO source_work_subject
+            SELECT DISTINCT 'prh:work:' || edition.prh_work_id,
+                   edition.custom_subject_category::varchar,
+                   'prh', 'custom_subject'
+            FROM raw_prh_edition edition
+            WHERE coalesce(edition.custom_subject_category::varchar, '') <> '';
+
+            INSERT INTO raw_edition BY NAME
+            SELECT DISTINCT 'prh:edition:' || isbn AS uuid, '0' AS work_id,
+                   isbn10 AS isbn_ten, isbn AS isbn_thirteen,
+                   publication_date::varchar AS publication_date,
+                   extract_year(publication_date::varchar)::varchar AS publication_year,
+                   NULL::varchar AS ol_id, 'prh:work:' || prh_work_id AS work_ol_id,
+                   pages::varchar AS number_of_pages, NULL::varchar AS lccn,
+                   NULL::varchar AS oclc_number, imprint_name AS publisher,
+                   series_name AS series, NULL::varchar AS goodreads_id,
+                   NULL::varchar AS google_id, asin AS asin
+            FROM raw_prh_edition WHERE normalize_isbn(isbn) <> '';
         """)
 
     def build_work_identity(self):
@@ -224,6 +439,23 @@ class CatalogBuilder:
                     PARTITION BY normalized_identifier
                 ) AS matching_work_count
                 FROM work_isbn_raw
+            ), prh_ol_target AS (
+                SELECT DISTINCT prh.work_key AS prh_work_key,
+                       ol.work_key AS ol_work_key
+                FROM work_isbn_raw prh
+                JOIN work_isbn_raw ol USING (normalized_identifier)
+                WHERE starts_with(prh.work_key, 'prh:work:')
+                  AND NOT starts_with(ol.work_key, 'prh:work:')
+            ), prh_target_count AS (
+                SELECT target.prh_work_key,
+                       count(DISTINCT target.ol_work_key) AS target_count,
+                       count(DISTINCT ol.normalized_title) AS target_title_count,
+                       min(prh.normalized_title) = min(ol.normalized_title)
+                         AS titles_agree
+                FROM prh_ol_target target
+                JOIN source_work prh ON prh.source_key = target.prh_work_key
+                JOIN source_work ol ON ol.source_key = target.ol_work_key
+                GROUP BY target.prh_work_key
             )
             SELECT least(a.work_key, b.work_key) AS node_a,
                    greatest(a.work_key, b.work_key) AS node_b,
@@ -235,7 +467,54 @@ class CatalogBuilder:
             JOIN work_isbn b
               ON b.normalized_identifier = a.normalized_identifier
              AND b.work_key > a.work_key
-            WHERE a.matching_work_count <= 5;
+            LEFT JOIN prh_target_count a_target
+              ON a_target.prh_work_key = a.work_key
+            LEFT JOIN prh_target_count b_target
+              ON b_target.prh_work_key = b.work_key
+            WHERE a.matching_work_count <= 5
+              AND (
+                  starts_with(a.work_key, 'prh:work:')
+                    = starts_with(b.work_key, 'prh:work:')
+                  OR coalesce(a_target.target_count, b_target.target_count) = 1
+                  OR (coalesce(a_target.target_title_count,
+                               b_target.target_title_count) = 1
+                      AND coalesce(a_target.titles_agree,
+                                   b_target.titles_agree))
+              );
+
+            CREATE OR REPLACE TABLE prh_work_merge_conflict AS
+            WITH work_isbn AS (
+                SELECT DISTINCT ew.work_key, identifier.normalized_identifier
+                FROM source_edition_identifier identifier
+                JOIN source_edition_work ew USING (edition_key)
+                WHERE identifier.identifier_type IN ('isbn10', 'isbn13')
+                  AND identifier.normalized_identifier <> ''
+            ), target AS (
+                SELECT DISTINCT prh.work_key AS prh_work_key,
+                       ol.work_key AS ol_work_key
+                FROM work_isbn prh JOIN work_isbn ol USING (normalized_identifier)
+                WHERE starts_with(prh.work_key, 'prh:work:')
+                  AND NOT starts_with(ol.work_key, 'prh:work:')
+            ), ambiguous AS (
+                SELECT target.prh_work_key, count(*) AS target_count,
+                       count(DISTINCT ol.normalized_title) AS target_title_count,
+                       min(prh.normalized_title) = min(ol.normalized_title)
+                         AS titles_agree
+                FROM target
+                JOIN source_work prh ON prh.source_key = target.prh_work_key
+                JOIN source_work ol ON ol.source_key = target.ol_work_key
+                GROUP BY target.prh_work_key
+                HAVING count(*) > 1
+                   AND (count(DISTINCT ol.normalized_title) > 1
+                        OR min(prh.normalized_title) <> min(ol.normalized_title))
+            )
+            SELECT target.prh_work_key AS source_work_a,
+                   target.ol_work_key AS source_work_b,
+                   'prh_isbns_match_multiple_ol_works' AS match_rule,
+                   0.20::double AS confidence,
+                   json_object('openlibrary_target_count', ambiguous.target_count,
+                               'note', 'kept separate pending review') AS evidence
+            FROM target JOIN ambiguous USING (prh_work_key);
         """)
         connected_components(
             self.db, "SELECT source_key AS node FROM source_work",
@@ -359,6 +638,10 @@ class CatalogBuilder:
                   SELECT 1 FROM work_merge_edge edge
                   WHERE edge.node_a = a.source_key AND edge.node_b = b.source_key
               );
+
+            INSERT INTO work_merge_candidate
+            SELECT source_work_a, source_work_b, match_rule, confidence, evidence
+            FROM prh_work_merge_conflict;
         """)
         connected_components(
             self.db, "SELECT source_key AS node FROM source_work",
@@ -408,12 +691,17 @@ class CatalogBuilder:
             )
             SELECT id::bigint AS id, canonical_source_key AS uuid,
                    creator_name, personal_name, birth_date, death_date,
-                   regexp_extract(canonical_source_key, '([^/]+)$', 1) AS ol_id
+                   CASE WHEN starts_with(canonical_source_key, '/')
+                        THEN regexp_extract(canonical_source_key, '([^/]+)$', 1) END AS ol_id
             FROM chosen;
 
             CREATE OR REPLACE TABLE author_external_identifier AS
-            SELECT canonical.id AS author_id, 'openlibrary' AS provider,
-                   mapping.node AS external_id,
+            SELECT canonical.id AS author_id,
+                   CASE WHEN starts_with(mapping.node, 'prh:author:')
+                        THEN 'prh' ELSE 'openlibrary' END AS provider,
+                   CASE WHEN starts_with(mapping.node, 'prh:author:')
+                        THEN replace(mapping.node, 'prh:author:', '')
+                        ELSE mapping.node END AS external_id,
                    mapping.node = mapping.canonical_source_key AS is_canonical
             FROM author_source_map mapping
             JOIN canonical_author canonical
@@ -478,7 +766,8 @@ class CatalogBuilder:
                    nullif(isbn_thirteen, '') AS isbn_thirteen,
                    nullif(language_code, '') AS language_code,
                    num_of_pages,
-                   regexp_extract(canonical_source_key, '([^/]+)$', 1) AS ol_id,
+                   CASE WHEN starts_with(canonical_source_key, '/')
+                        THEN regexp_extract(canonical_source_key, '([^/]+)$', 1) END AS ol_id,
                    cover_id, featured_covers,
                    nullif(series, '') AS series,
                    nullif(position_in_series, '') AS position_in_series,
@@ -489,8 +778,12 @@ class CatalogBuilder:
             FROM chosen JOIN aggregate_date USING (canonical_source_key);
 
             CREATE OR REPLACE TABLE work_external_identifier AS
-            SELECT canonical.id AS work_id, 'openlibrary' AS provider,
-                   mapping.node AS external_id,
+            SELECT canonical.id AS work_id,
+                   CASE WHEN starts_with(mapping.node, 'prh:work:')
+                        THEN 'prh' ELSE 'openlibrary' END AS provider,
+                   CASE WHEN starts_with(mapping.node, 'prh:work:')
+                        THEN replace(mapping.node, 'prh:work:', '')
+                        ELSE mapping.node END AS external_id,
                    mapping.node = mapping.canonical_source_key AS is_canonical
             FROM work_source_map mapping
             JOIN canonical_work_base canonical
@@ -581,7 +874,8 @@ class CatalogBuilder:
                    nullif(isbn_ten, '') AS isbn_ten,
                    nullif(isbn_thirteen, '') AS isbn_thirteen,
                    publication_date, parsed_year AS publication_year,
-                   regexp_extract(canonical_source_key, '([^/]+)$', 1) AS ol_id,
+                   CASE WHEN starts_with(canonical_source_key, '/')
+                        THEN regexp_extract(canonical_source_key, '([^/]+)$', 1) END AS ol_id,
                    number_of_pages, lccn, oclc_number, publisher, series,
                    goodreads_id, google_id, asin, has_isbn
             FROM chosen;
@@ -605,8 +899,12 @@ class CatalogBuilder:
             LEFT JOIN featured_edition_choice featured ON featured.work_id = work.id;
 
             CREATE OR REPLACE TABLE edition_external_identifier AS
-            SELECT canonical.id AS edition_id, 'openlibrary' AS provider,
-                   mapping.node AS external_id,
+            SELECT canonical.id AS edition_id,
+                   CASE WHEN starts_with(mapping.node, 'prh:edition:')
+                        THEN 'prh' ELSE 'openlibrary' END AS provider,
+                   CASE WHEN starts_with(mapping.node, 'prh:edition:')
+                        THEN replace(mapping.node, 'prh:edition:', '')
+                        ELSE mapping.node END AS external_id,
                    mapping.node = mapping.canonical_source_key AS is_canonical
             FROM edition_source_map mapping
             JOIN canonical_edition canonical
@@ -661,13 +959,13 @@ class CatalogBuilder:
 
             CREATE OR REPLACE TABLE canonical_edition_creator AS
             SELECT DISTINCT edition.id AS edition_id, author.id AS creator_id
-            FROM raw_edition_author relation
+            FROM source_edition_author relation
             JOIN edition_source_map edition_mapping
-              ON edition_mapping.node = relation.edition_external_id
+              ON edition_mapping.node = relation.edition_key
             JOIN canonical_edition edition
               ON edition.uuid = edition_mapping.canonical_source_key
             JOIN author_source_map author_mapping
-              ON author_mapping.node = relation.author_external_id
+              ON author_mapping.node = relation.author_key
             JOIN canonical_author author
               ON author.uuid = author_mapping.canonical_source_key;
         """)
@@ -676,9 +974,10 @@ class CatalogBuilder:
         self.db.execute("""
             CREATE OR REPLACE TABLE normalized_work_subject AS
             SELECT DISTINCT work.id AS work_id,
-                   normalize_tag(subject.subject) AS tag_name
-            FROM raw_work_subject subject
-            JOIN work_source_map mapping ON mapping.node = subject.work_external_id
+                   normalize_tag(subject.subject) AS tag_name,
+                   subject.provider, subject.tag_source
+            FROM source_work_subject subject
+            JOIN work_source_map mapping ON mapping.node = subject.work_key
             JOIN canonical_work_base work ON work.uuid = mapping.canonical_source_key
             WHERE normalize_tag(subject.subject) <> '';
 
@@ -696,6 +995,12 @@ class CatalogBuilder:
 
             CREATE OR REPLACE TABLE canonical_work_tag AS
             SELECT DISTINCT subject.work_id, tag.id AS tag_id
+            FROM normalized_work_subject subject
+            JOIN canonical_tag tag USING (tag_name);
+
+            CREATE OR REPLACE TABLE canonical_work_tag_source AS
+            SELECT DISTINCT subject.work_id, tag.id AS tag_id,
+                   subject.provider, subject.tag_source
             FROM normalized_work_subject subject
             JOIN canonical_tag tag USING (tag_name);
 
@@ -745,6 +1050,127 @@ class CatalogBuilder:
             FROM canonical_author author
             LEFT JOIN author_catalog_size catalog ON catalog.author_id = author.id
             LEFT JOIN profile_hash profile ON profile.author_id = author.id;
+        """)
+
+    def build_prh_metadata(self):
+        """Attach PRH-only enrichment after canonical IDs have been assigned."""
+        self.db.execute("""
+            CREATE OR REPLACE TABLE canonical_prh_author_profile AS
+            SELECT DISTINCT author.id AS author_id,
+                   profile.prh_author_id, profile.biography_html,
+                   profile.photo_url, profile.photo_credit, profile.photo_date,
+                   profile.prh_url, profile.reported_work_count,
+                   profile.related_links::json AS related_links
+            FROM raw_prh_author_profile profile
+            JOIN author_source_map mapping
+              ON mapping.node = 'prh:author:' || profile.prh_author_id
+            JOIN canonical_author author
+              ON author.uuid = mapping.canonical_source_key;
+
+            CREATE OR REPLACE TABLE canonical_prh_work_metadata AS
+            SELECT DISTINCT work.id AS work_id, source.prh_work_id,
+                   source.prh_display_title, source.prh_url,
+                   source.keynote_html, source.positioning_html,
+                   source.awards::json AS awards, source.frontlistiest_isbn,
+                   source.isbn_counts::json AS isbn_counts
+            FROM raw_prh_work source
+            JOIN work_source_map mapping
+              ON mapping.node = 'prh:work:' || source.prh_work_id
+            JOIN canonical_work_base work
+              ON work.uuid = mapping.canonical_source_key;
+
+            CREATE OR REPLACE TABLE canonical_prh_edition_metadata AS
+            SELECT DISTINCT edition.id AS edition_id, source.prh_work_id,
+                   source.isbn, source.trim_size, source.format_family,
+                   source.format_code, source.format_name, source.version,
+                   source.imprint_code, source.imprint_name, source.asin,
+                   source.cover_url, source.prh_url, source.series_code,
+                   source.series_name, source.series_position,
+                   source.custom_subject_category, source.sales_restriction,
+                   source.raw_flags::json AS raw_flags
+            FROM raw_prh_edition source
+            JOIN edition_source_map mapping
+              ON mapping.node = 'prh:edition:' || source.isbn
+            JOIN canonical_edition edition
+              ON edition.uuid = mapping.canonical_source_key;
+
+            CREATE OR REPLACE TABLE canonical_work_contributor AS
+            SELECT DISTINCT work.id AS work_id, author.id AS creator_id,
+                   contributor.role_code, contributor.role_description,
+                   contributor.display, contributor.primary_flag,
+                   contributor.observed_isbns::json AS observed_isbns,
+                   'prh'::varchar AS provider
+            FROM raw_prh_work_contributor contributor
+            JOIN work_source_map work_mapping
+              ON work_mapping.node = 'prh:work:' || contributor.prh_work_id
+            JOIN canonical_work_base work
+              ON work.uuid = work_mapping.canonical_source_key
+            JOIN author_source_map author_mapping
+              ON author_mapping.node = 'prh:author:' || contributor.prh_author_id
+            JOIN canonical_author author
+              ON author.uuid = author_mapping.canonical_source_key;
+
+            CREATE OR REPLACE TABLE canonical_work_cover_url AS
+            SELECT DISTINCT work.id AS work_id, edition.cover_url AS url,
+                   'prh'::varchar AS provider
+            FROM raw_prh_edition edition
+            JOIN work_source_map mapping
+              ON mapping.node = 'prh:work:' || edition.prh_work_id
+            JOIN canonical_work_base work
+              ON work.uuid = mapping.canonical_source_key
+            WHERE coalesce(edition.cover_url, '') <> '';
+
+            CREATE OR REPLACE TABLE canonical_series AS
+            WITH source AS (
+                SELECT prh_series_code, name, description_html, series_count,
+                       series_date, is_numbered, is_kids, prh_url, 0 AS preference
+                FROM raw_prh_series
+                UNION ALL
+                SELECT prh_series_code, series_name, description_html, NULL,
+                       NULL, NULL, NULL, prh_url, 1
+                FROM raw_prh_series_hint
+            ), ranked AS (
+                SELECT *, row_number() OVER (
+                    PARTITION BY prh_series_code ORDER BY preference,
+                    (name IS NULL), name
+                ) AS choice
+                FROM source WHERE coalesce(prh_series_code, '') <> ''
+            )
+            SELECT row_number() OVER (ORDER BY prh_series_code)::bigint AS id,
+                   'prh:series:' || prh_series_code AS uuid,
+                   prh_series_code, name, description_html, series_count,
+                   series_date, is_numbered, is_kids, prh_url
+            FROM ranked WHERE choice = 1;
+
+            CREATE OR REPLACE TABLE series_external_identifier AS
+            SELECT id AS series_id, 'prh'::varchar AS provider,
+                   prh_series_code AS external_id, true AS is_canonical
+            FROM canonical_series;
+
+            CREATE OR REPLACE TABLE canonical_work_series AS
+            WITH memberships AS (
+                SELECT prh_series_code, prh_work_id, position, 0 AS preference
+                FROM raw_prh_work_series
+                UNION ALL
+                SELECT prh_series_code, prh_work_id, position, 1
+                FROM raw_prh_series_hint
+            ), ranked AS (
+                SELECT *, row_number() OVER (
+                    PARTITION BY prh_series_code, prh_work_id
+                    ORDER BY preference, position NULLS LAST
+                ) AS choice
+                FROM memberships
+            )
+            SELECT DISTINCT work.id AS work_id, series.id AS series_id,
+                   membership.position
+            FROM ranked membership
+            JOIN canonical_series series
+              ON series.prh_series_code = membership.prh_series_code
+            JOIN work_source_map mapping
+              ON mapping.node = 'prh:work:' || membership.prh_work_id
+            JOIN canonical_work_base work
+              ON work.uuid = mapping.canonical_source_key
+            WHERE membership.choice = 1;
         """)
 
     def build_similar_authors(self):
@@ -810,6 +1236,7 @@ class CatalogBuilder:
             "author_external_identifiers.csv": "SELECT * FROM author_external_identifier ORDER BY author_id, provider, external_id",
             "author_alternate_names.csv": "SELECT * FROM canonical_author_alternate_name ORDER BY author_id, position, alternate_name",
             "author_external_links.csv": "SELECT * FROM canonical_author_link ORDER BY author_id, link_type, url",
+            "author_profiles.csv": "SELECT * FROM canonical_prh_author_profile ORDER BY author_id, prh_author_id",
             "author_merge_audit.csv": "SELECT node_a AS source_author_a, node_b AS source_author_b, match_rule, confidence, evidence FROM author_merge_edge ORDER BY node_a, node_b, match_rule",
             "author_merge_candidates.csv": "SELECT * FROM author_merge_candidate ORDER BY normalized_name",
             "works.csv": "SELECT * FROM canonical_work ORDER BY id",
@@ -818,6 +1245,9 @@ class CatalogBuilder:
             "work_merge_candidates.csv": "SELECT * FROM work_merge_candidate ORDER BY source_work_a, source_work_b",
             "work_creators.csv": "SELECT * FROM canonical_work_creator ORDER BY work_id, creator_id",
             "work_covers.csv": "SELECT * FROM canonical_work_cover ORDER BY work_id, position, cover_id",
+            "work_cover_urls.csv": "SELECT * FROM canonical_work_cover_url ORDER BY work_id, provider, url",
+            "work_contributors.csv": "SELECT * FROM canonical_work_contributor ORDER BY work_id, creator_id, role_code",
+            "prh_work_metadata.csv": "SELECT * FROM canonical_prh_work_metadata ORDER BY work_id, prh_work_id",
             "editions.csv": "SELECT * EXCLUDE (has_isbn) FROM canonical_edition ORDER BY id",
             "edition_external_identifiers.csv": "SELECT * FROM edition_external_identifier ORDER BY edition_id, provider, external_id",
             "edition_identifiers.csv": "SELECT * FROM canonical_edition_identifier ORDER BY edition_id, identifier_type, position, identifier",
@@ -825,8 +1255,13 @@ class CatalogBuilder:
             "edition_covers.csv": "SELECT * FROM canonical_edition_cover ORDER BY edition_id, position, cover_id",
             "edition_languages.csv": "SELECT * FROM canonical_edition_language ORDER BY edition_id, position, language_code",
             "edition_creators.csv": "SELECT * FROM canonical_edition_creator ORDER BY edition_id, creator_id",
+            "prh_edition_metadata.csv": "SELECT * FROM canonical_prh_edition_metadata ORDER BY edition_id",
             "tags.csv": "SELECT * FROM canonical_tag ORDER BY id",
             "work_tags.csv": "SELECT * FROM canonical_work_tag ORDER BY work_id, tag_id",
+            "work_tag_sources.csv": "SELECT * FROM canonical_work_tag_source ORDER BY work_id, tag_id, provider, tag_source",
+            "series.csv": "SELECT * FROM canonical_series ORDER BY id",
+            "series_external_identifiers.csv": "SELECT * FROM series_external_identifier ORDER BY series_id, provider, external_id",
+            "work_series.csv": "SELECT * FROM canonical_work_series ORDER BY work_id, series_id",
             "author_tag_profiles.csv": "SELECT * FROM author_tag_profile ORDER BY author_id, profile_weight DESC, tag_id",
             "author_profile_state.csv": "SELECT * FROM author_profile_state ORDER BY author_id",
             "similar_authors.csv": "SELECT * FROM similar_author ORDER BY author_id, rank",
@@ -903,6 +1338,18 @@ class CatalogBuilder:
                 LEFT JOIN canonical_tag tag ON tag.id = relation.tag_id
                 WHERE work.id IS NULL OR tag.id IS NULL
             """,
+            "work_contributor_orphans": """
+                SELECT count(*) FROM canonical_work_contributor relation
+                LEFT JOIN canonical_work work ON work.id = relation.work_id
+                LEFT JOIN canonical_author author ON author.id = relation.creator_id
+                WHERE work.id IS NULL OR author.id IS NULL
+            """,
+            "work_series_orphans": """
+                SELECT count(*) FROM canonical_work_series relation
+                LEFT JOIN canonical_work work ON work.id = relation.work_id
+                LEFT JOIN canonical_series series ON series.id = relation.series_id
+                WHERE work.id IS NULL OR series.id IS NULL
+            """,
             "edition_creator_orphans": """
                 SELECT count(*) FROM canonical_edition_creator relation
                 LEFT JOIN canonical_edition edition ON edition.id = relation.edition_id
@@ -965,6 +1412,7 @@ class CatalogBuilder:
         self.converge_work_and_author_identity()
         self.build_canonical_tables()
         self.build_editions_and_featured()
+        self.build_prh_metadata()
         self.build_tags_and_profiles()
         self.build_similar_authors()
         self.validate()
@@ -978,11 +1426,12 @@ def main():
     parser.add_argument("--database", type=Path)
     parser.add_argument("--similar-authors-limit", type=int, default=20)
     parser.add_argument("--minimum-shared-tags", type=int, default=2)
+    parser.add_argument("--prh-data-dir", type=Path)
     args = parser.parse_args()
     database = args.database or args.output_dir / "catalog.duckdb"
     builder = CatalogBuilder(
         args.input_dir, args.output_dir, database,
-        args.similar_authors_limit, args.minimum_shared_tags,
+        args.similar_authors_limit, args.minimum_shared_tags, args.prh_data_dir,
     )
     try:
         summary = builder.run()

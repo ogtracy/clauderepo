@@ -63,6 +63,29 @@ reports missing authors and works without retained editions.
 
 ## Full build
 
+If the Open Library dumps and PRH products have already been downloaded, run
+the combined post-download pipeline:
+
+```bash
+./build_combined_catalog.py \
+  --authors /data/ol_dump_authors_latest.txt.gz \
+  --works /data/ol_dump_works_latest.txt.gz \
+  --editions /data/ol_dump_editions_latest.txt.gz \
+  --prh-products /data/prh_data \
+  --output-dir /data/quillent_catalog_build
+```
+
+`--prh-products` may point either to the PRH data root or directly to its
+`normalized/` directory. The runner is resumable: completed parse and transform
+stages are checkpointed beneath the output directory.
+
+PRH records are merged into Open Library records by validated ISBN. Contributors
+with author roles participate in author identity resolution; all contributor
+roles are retained in `work_contributors.csv`. PRH subjects and keyword
+candidates use the same tag cleaner as Open Library subjects. Series, cover
+URLs, profiles, and PRH-specific metadata are exported separately instead of
+being discarded.
+
 The one-command path downloads the official dumps, resumes `.part` downloads
 when the server supports HTTP ranges, checks remote size/version metadata, and
 runs through final canonical CSV creation:

@@ -145,7 +145,7 @@ def process_tags(input_file: str, output_dir: str, test_mode: bool = False):
                     tag_vocabulary[tag] += 1
 
             works_processed += 1
-            if works_processed % 10000 == 0:
+            if works_processed % 100000 == 0:
                 print(f"  Processed {works_processed:,} works, {len(tag_vocabulary):,} unique tags found")
 
             if test_mode and works_processed >= 1000:

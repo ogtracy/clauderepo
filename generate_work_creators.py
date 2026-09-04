@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Dict, Tuple
 
+csv.field_size_limit(10_000_000)
+
 WORKS_INPUT_DIR = "works_csv"          # Original works data with authors
 QUILLENT_WORK_DIR = "quillent_work_csv"  # Transformed works with work IDs
 OUTPUT_DIR = "work_creators_csv"

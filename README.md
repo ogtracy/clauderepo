@@ -185,3 +185,5 @@ python3 openlibrary_editions_to_csv.py
 For deduplication, canonical numeric IDs, featured-edition selection, author
 tag profiles, similar-author generation, connected sampling, and PostgreSQL
 restore instructions, see [CANONICAL_BUILD_README.md](CANONICAL_BUILD_README.md).
+
+The complete download-to-CSV entry point is `download_and_build_catalog.py`.

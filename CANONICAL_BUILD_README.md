@@ -63,7 +63,21 @@ reports missing authors and works without retained editions.
 
 ## Full build
 
-Run the resumable pipeline directly against all three dumps:
+The one-command path downloads the official dumps, resumes `.part` downloads
+when the server supports HTTP ranges, checks remote size/version metadata, and
+runs through final canonical CSV creation:
+
+```bash
+.venv/bin/python download_and_build_catalog.py \
+  --workspace /data/bookprophet_catalog
+```
+
+The default disk-space guard requires 250 GiB free. Set
+`--minimum-free-gb` only after estimating the space needed for compressed
+dumps, parsed CSVs, transformed relationships, the DuckDB file, and exports.
+Use `--download-only` to stop after acquiring the dumps.
+
+If the dumps already exist, run the resumable pipeline directly:
 
 ```bash
 PYTHONPATH=.catalog-deps python3 run_catalog_pipeline.py \
